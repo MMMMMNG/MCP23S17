@@ -1,4 +1,4 @@
-package rrr.mcp23s17;
+package com.rrr.mcp23s17;
 
 import com.pi4j.io.gpio.GpioPinDigitalInput;
 import com.pi4j.io.gpio.GpioPinDigitalOutput;
