@@ -58,6 +58,7 @@ public final class MCP23S17 {
      * The pins are renumbered so that port A's pins are in order as {@code PIN0} through {@code PIN7} and port B's pins
      * are in order as {@code PIN8} through {@code PIN15}.
      * </p>
+     *
      * @author Robert Russell
      */
     public enum Pin {
@@ -745,6 +746,13 @@ public final class MCP23S17 {
     private volatile byte OLATA = (byte) 0b00000000;
     private volatile byte OLATB = (byte) 0b00000000;
 
+    /**
+     * This {@code Object}'s intrinsic lock is acquired whenever one of the above bytes is written to so that two
+     * threads may not write to the same byte at the same time. Ideally we would have one lock per byte because, for
+     * example, a thread writing only to IODIRB need not yield to a thread writing only to IODIRA, but then we would
+     * have fourteen lock objects! Byte writes should be infrequent enough and fast enough for this to not be an issue,
+     * however.
+     */
     private final Object byteWriteLock = new Object();
 
     /**
