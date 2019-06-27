@@ -39,13 +39,6 @@ import java.util.*;
  * the <a href=http://ww1.microchip.com/downloads/en/DeviceDoc/20001952C.pdf>MCP23S17 datasheet</a> for more
  * information.
  * </p>
- * <p>
- * The only mutable state in {@code MCP23S17} objects are the bytes representing the register values on the chip, which
- * are accessed non-synchronously in both this class and its inner class, {@code PinView}. As such, any actions
- * modifying these bytes (the only methods that modify them are contained in {@code PinView}) must be synchronized
- * externally, if necessary. Also, calls to the {@code writeXXX} methods must be synchronized if used in threaded
- * applications as otherwise they will all attempt to write to the SPI bus at once.
- * </p>
  *
  * @author Robert Russell
  */
@@ -55,8 +48,6 @@ import java.util.*;
 //       the chip; if the changes were aborted/an error occurred/whatever happens before the lock is released, all the
 //       changes would simply be forgotten without (as is currently the case) local state potentially becoming
 //       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
-// TODO: synchronization for reads/writes should be built in because the user does not know whether or not the interrupt
-//       thread is currently occupying the SPI bus.
 public final class MCP23S17 {
 
     /**
@@ -285,12 +276,14 @@ public final class MCP23S17 {
          * @param value the value to set on the pin.
          */
         public void set(boolean value) {
-            if (pin.isPortA()) {
-                OLATA = pin.setCorrespondingBit(OLATA, value);
-                // write(ADDR_OLATA, OLATA);
-            } else {  // portB
-                OLATB = pin.setCorrespondingBit(OLATB, value);
-                // write(ADDR_OLATB, OLATB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    OLATA = pin.setCorrespondingBit(OLATA, value);
+                    // write(ADDR_OLATA, OLATA);
+                } else {  // portB
+                    OLATB = pin.setCorrespondingBit(OLATB, value);
+                    // write(ADDR_OLATB, OLATB);
+                }
             }
         }
 
@@ -338,12 +331,14 @@ public final class MCP23S17 {
          * @param input true for input; false for output.
          */
         public void setDirection(boolean input) {
-            if (pin.isPortA()) {
-                IODIRA = pin.setCorrespondingBit(IODIRA, input);
-                // write(ADDR_IODIRA, IODIRA);
-            } else {  // portB
-                IODIRB = pin.setCorrespondingBit(IODIRB, input);
-                // write(ADDR_IODIRB, IODIRB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    IODIRA = pin.setCorrespondingBit(IODIRA, input);
+                    // write(ADDR_IODIRA, IODIRA);
+                } else {  // portB
+                    IODIRB = pin.setCorrespondingBit(IODIRB, input);
+                    // write(ADDR_IODIRB, IODIRB);
+                }
             }
         }
 
@@ -382,12 +377,14 @@ public final class MCP23S17 {
          */
         // TODO: this name is misleading and inconsistent; should be "isInputInverted"
         public void setInverted(boolean inverted) {
-            if (pin.isPortA()) {
-                IPOLA = pin.setCorrespondingBit(IPOLA, inverted);
-                // write(ADDR_IPOLA, IPOLA);
-            } else {  // portB
-                IPOLB = pin.setCorrespondingBit(IPOLB, inverted);
-                // write(ADDR_IPOLB, IPOLB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    IPOLA = pin.setCorrespondingBit(IPOLA, inverted);
+                    // write(ADDR_IPOLA, IPOLA);
+                } else {  // portB
+                    IPOLB = pin.setCorrespondingBit(IPOLB, inverted);
+                    // write(ADDR_IPOLB, IPOLB);
+                }
             }
         }
 
@@ -425,12 +422,14 @@ public final class MCP23S17 {
          * @param interruptEnabled whether or not to enable interrupts.
          */
         public void setInterruptEnabled(boolean interruptEnabled) {
-            if (pin.isPortA()) {
-                GPINTENA = pin.setCorrespondingBit(GPINTENA, interruptEnabled);
-                // write(ADDR_GPINTENA, GPINTENA);
-            } else {  // portB
-                GPINTENB = pin.setCorrespondingBit(GPINTENB, interruptEnabled);
-                // write(ADDR_GPINTENB, GPINTENB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    GPINTENA = pin.setCorrespondingBit(GPINTENA, interruptEnabled);
+                    // write(ADDR_GPINTENA, GPINTENA);
+                } else {  // portB
+                    GPINTENB = pin.setCorrespondingBit(GPINTENB, interruptEnabled);
+                    // write(ADDR_GPINTENB, GPINTENB);
+                }
             }
         }
 
@@ -469,12 +468,14 @@ public final class MCP23S17 {
          * @param value the default comparison value for comparison interrupt mode for this pin.
          */
         public void setDefaultComparisonValue(boolean value) {
-            if (pin.isPortA()) {
-                DEFVALA = pin.setCorrespondingBit(DEFVALA, value);
-                // write(ADDR_DEFVALA, DEFVALA);
-            } else {  // portB
-                DEFVALB = pin.setCorrespondingBit(DEFVALB, value);
-                // write(ADDR_DEFVALB, DEFVALB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    DEFVALA = pin.setCorrespondingBit(DEFVALA, value);
+                    // write(ADDR_DEFVALA, DEFVALA);
+                } else {  // portB
+                    DEFVALB = pin.setCorrespondingBit(DEFVALB, value);
+                    // write(ADDR_DEFVALB, DEFVALB);
+                }
             }
         }
 
@@ -508,12 +509,14 @@ public final class MCP23S17 {
          * @param comparison true for comparison mode; false for change mode.
          */
         public void setInterruptMode(boolean comparison) {
-            if (pin.isPortA()) {
-                INTCONA = pin.setCorrespondingBit(INTCONA, comparison);
-                // write(ADDR_INTCONA, INTCONA);
-            } else {  // portB
-                INTCONB = pin.setCorrespondingBit(INTCONB, comparison);
-                // write(ADDR_INTCONB, INTCONB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    INTCONA = pin.setCorrespondingBit(INTCONA, comparison);
+                    // write(ADDR_INTCONA, INTCONA);
+                } else {  // portB
+                    INTCONB = pin.setCorrespondingBit(INTCONB, comparison);
+                    // write(ADDR_INTCONB, INTCONB);
+                }
             }
         }
 
@@ -551,12 +554,14 @@ public final class MCP23S17 {
          * @param pulledUp  whether or not to enable pull-up resistors.
          */
         public void setPulledUp(boolean pulledUp) {
-            if (pin.isPortA()) {
-                GPPUA = pin.setCorrespondingBit(GPPUA, pulledUp);
-                // write(ADDR_GPPUA, GPPUA);
-            } else {  // portB
-                GPPUB = pin.setCorrespondingBit(GPPUB, pulledUp);
-                // write(ADDR_GPPUB, GPPUB);
+            synchronized (byteWriteLock) {
+                if (pin.isPortA()) {
+                    GPPUA = pin.setCorrespondingBit(GPPUA, pulledUp);
+                    // write(ADDR_GPPUA, GPPUA);
+                } else {  // portB
+                    GPPUB = pin.setCorrespondingBit(GPPUB, pulledUp);
+                    // write(ADDR_GPPUB, GPPUB);
+                }
             }
         }
 
@@ -724,21 +729,23 @@ public final class MCP23S17 {
     // They are initialized to the corresponding registers' initial value, as given in the MCP23S17 datasheet.
     // Note that these bytes do not necessarily represent the actual value in the corresponding register (i.e. they may
     // be out of sync with the registers).
-    private byte IODIRA = (byte) 0b11111111;
-    private byte IODIRB = (byte) 0b11111111;
-    private byte IPOLA = (byte) 0b00000000;
-    private byte IPOLB = (byte) 0b00000000;
-    private byte GPINTENA = (byte) 0b00000000;
-    private byte GPINTENB = (byte) 0b00000000;
-    private byte DEFVALA = (byte) 0b00000000;
-    private byte DEFVALB = (byte) 0b00000000;
-    private byte INTCONA = (byte) 0b00000000;
-    private byte INTCONB = (byte) 0b00000000;
-    // private byte IOCON = (byte) 0b00000000;  // Unused
-    private byte GPPUA = (byte) 0b00000000;
-    private byte GPPUB = (byte) 0b00000000;
-    private byte OLATA = (byte) 0b00000000;
-    private byte OLATB = (byte) 0b00000000;
+    private volatile byte IODIRA = (byte) 0b11111111;
+    private volatile byte IODIRB = (byte) 0b11111111;
+    private volatile byte IPOLA = (byte) 0b00000000;
+    private volatile byte IPOLB = (byte) 0b00000000;
+    private volatile byte GPINTENA = (byte) 0b00000000;
+    private volatile byte GPINTENB = (byte) 0b00000000;
+    private volatile byte DEFVALA = (byte) 0b00000000;
+    private volatile byte DEFVALB = (byte) 0b00000000;
+    private volatile byte INTCONA = (byte) 0b00000000;
+    private volatile byte INTCONB = (byte) 0b00000000;
+    // private volatile byte IOCON = (byte) 0b00000000;  // Unused
+    private volatile byte GPPUA = (byte) 0b00000000;
+    private volatile byte GPPUB = (byte) 0b00000000;
+    private volatile byte OLATA = (byte) 0b00000000;
+    private volatile byte OLATB = (byte) 0b00000000;
+
+    private final Object byteWriteLock = new Object();
 
     /**
      * This is the only constructor and it is private--the static factory methods must be used for object creation.
@@ -873,22 +880,32 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write a byte to the register pointed to by the given address.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @param registerAddress the register address.
      * @param value the value to write to the register.
      * @throws IOException if the SPI write procedure fails.
      */
     private void write(byte registerAddress, byte value) throws IOException {
-        try {
-            chipSelect.low();
-            spi.write(WRITE_OPCODE, registerAddress, value);
-        } finally {
-            // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
-            chipSelect.high();
+        // Without testing it is unclear whether the synchronization here is necessary--the documentation on SpiDevice
+        // is poor.
+        synchronized (spi) {
+            try {
+                chipSelect.low();
+                spi.write(WRITE_OPCODE, registerAddress, value);
+            } finally {
+                // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
+                chipSelect.high();
+            }
         }
     }
 
     /**
      * Initiate SPI communication with the chip and write the IODIRA byte to the IODIRA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -899,6 +916,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the IODIRB byte to the IODIRB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeIODIRB() throws IOException {
@@ -907,6 +927,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the IPOLA byte to the IPOLA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -917,6 +940,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the IPOLB byte to the IPOLB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeIPOLB() throws IOException {
@@ -925,6 +951,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the GPINTENA byte to the GPINTENA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -935,6 +964,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the GPINTENB byte to the GPINTENB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeGPINTENB() throws IOException {
@@ -943,6 +975,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the DEFVALA byte to the DEFVALA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -953,6 +988,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the DEFVALB byte to the DEFVALB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeDEFVALB() throws IOException {
@@ -961,6 +999,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the INTCONA byte to the INTCONA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -971,6 +1012,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the INTCONB byte to the INTCONB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeINTCONB() throws IOException {
@@ -979,6 +1023,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the GPPUA byte to the GPPUA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -989,6 +1036,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the GPPUB byte to the GPPUB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeGPPUB() throws IOException {
@@ -997,6 +1047,9 @@ public final class MCP23S17 {
 
     /**
      * Initiate SPI communication with the chip and write the OLATA byte to the OLATA register.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @throws IOException if the SPI write procedure fails.
      */
@@ -1007,6 +1060,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and write the OLATB byte to the OLATB register.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @throws IOException if the SPI write procedure fails.
      */
     public void writeOLATB() throws IOException {
@@ -1016,19 +1072,24 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address.
      *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     *
      * @param registerAddress the register address.
      * @return the byte read from the register.
      * @throws IOException if the SPI read procedure fails.
      */
     private byte read(byte registerAddress) throws IOException {
         byte data;
-        try {
-            chipSelect.low();
-            // The 0x00 byte is just arbitrary filler.
-            data = spi.write(READ_OPCODE, registerAddress, (byte) 0x00)[2];
-        } finally {
-            // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
-            chipSelect.high();
+        synchronized (spi) {
+            try {
+                chipSelect.low();
+                // The 0x00 byte is just arbitrary filler.
+                data = spi.write(READ_OPCODE, registerAddress, (byte) 0x00)[2];
+            } finally {
+                // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
+                chipSelect.high();
+            }
         }
         return data;
     }
@@ -1036,6 +1097,9 @@ public final class MCP23S17 {
     /**
      * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address. This
      * will rethrow any {@link IOException IOException}s that occur as {@link RuntimeException RuntimeException}s.
+     *
+     * @implSpec This is synchronized on the {@link SpiDevice SpiDevice} so that two or more reads/writes cannot be
+     * initiated at the same time.
      *
      * @param registerAddress the register address.
      * @return the byte read from the register.
