@@ -49,6 +49,14 @@ import java.util.*;
  *
  * @author Robert Russell
  */
+// TODO: that writeXXX must be called after a PinView setter method is extremely awkward. The same support for batch
+//       writes might be facilitated (in a future version) by some locking/synchronization mechanism where a lock is
+//       acquired, the changes are made, and then the lock is released, upon which the changes are actually written to
+//       the chip; if the changes were aborted/an error occurred/whatever happens before the lock is released, all the
+//       changes would simply be forgotten without (as is currently the case) local state potentially becoming
+//       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
+// TODO: synchronization for reads/writes should be built in because the user does not know whether or not the interrupt
+//       thread is currently occupying the SPI bus.
 public final class MCP23S17 {
 
     /**
@@ -238,7 +246,7 @@ public final class MCP23S17 {
 
         /**
          * The listeners registered specifically to this pin (i.e. not global listeners). This object is synchronized on
-         * so that listeners cannot be added or removed while an interrupt is being processed for vice versa.
+         * so that listeners cannot be added or removed while an interrupt is being processed or vice versa.
          */
         private final Collection<InterruptListener> listeners = new HashSet<>(0);
 
@@ -673,26 +681,49 @@ public final class MCP23S17 {
     private static final byte ADDR_OLATA = 0x14;
     private static final byte ADDR_OLATB = 0x15;
 
+    // OPCODES--these are written before a register address in the read and write processes.
     private static final byte WRITE_OPCODE = 0x40;
     private static final byte READ_OPCODE = 0x41;
 
+    // These arrays are used for interrupt handling. (Interrupts are port-specific, so having separate arrays for each
+    // port means we can iterate over the pins belonging to either port A or B.)
     private static final Pin[] PORT_A_PINS =
             {Pin.PIN0, Pin.PIN1, Pin.PIN2, Pin.PIN3, Pin.PIN4, Pin.PIN5, Pin.PIN6, Pin.PIN7};
     private static final Pin[] PORT_B_PINS =
             {Pin.PIN8, Pin.PIN9, Pin.PIN10, Pin.PIN11, Pin.PIN12, Pin.PIN13, Pin.PIN14, Pin.PIN15};
 
+    /**
+     * The output pin for the chip select line on the MCP23S17 chip.
+     */
     private final GpioPinDigitalOutput chipSelect;
+
+    /**
+     * The SPI communication interface.
+     */
     private final SpiDevice spi;
-    // TODO: doc -- we sync on this
+
+    /**
+     * The lazily-instantiated {@link PinView PinView}s. This object is synchronized on in
+     * {@link MCP23S17#getPinView(Pin) getPinView} as {@code PinView}s are accessed in the
+     * {@linkplain MCP23S17#callInterruptListeners(byte, byte, Pin[]) interrupt handling routine} (which is invoked in a
+     * different thread).
+     */
     private final EnumMap<Pin, PinView> pinViews = new EnumMap<>(Pin.class);
-    // TODO: doc -- we sync on this
+
+    /**
+     * The registered global listeners--not pin-specific listeners. This object is synchronized on so that listeners
+     * cannot be added or removed while an interrupt is being processed or vice versa.
+     */
     private final Collection<InterruptListener> globalListeners = new HashSet<>(0);
 
     // These are only referenced so they are not GCed.
     private final GpioPinDigitalInput portAInterrupt;
     private final GpioPinDigitalInput portBInterrupt;
 
-    // TODO: make these atomic?
+    // The bytes representing the value of the chip's various registers.
+    // They are initialized to the corresponding registers' initial value, as given in the MCP23S17 datasheet.
+    // Note that these bytes do not necessarily represent the actual value in the corresponding register (i.e. they may
+    // be out of sync with the registers).
     private byte IODIRA = (byte) 0b11111111;
     private byte IODIRB = (byte) 0b11111111;
     private byte IPOLA = (byte) 0b00000000;
@@ -709,6 +740,18 @@ public final class MCP23S17 {
     private byte OLATA = (byte) 0b00000000;
     private byte OLATB = (byte) 0b00000000;
 
+    /**
+     * This is the only constructor and it is private--the static factory methods must be used for object creation.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the {@linkplain GpioPinDigitalInput input pin} for the port A interrupt line on the chip,
+     *                       or {@code null}.
+     * @param portBInterrupt the {@linkplain GpioPinDigitalInput input pin} for the port B interrupt line on the chip,
+     *                       or {@code null}.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
     private MCP23S17(SpiChannel spiChannel,
                      GpioPinDigitalOutput chipSelect,
                      GpioPinDigitalInput portAInterrupt,
@@ -727,6 +770,12 @@ public final class MCP23S17 {
         chipSelect.high();
     }
 
+    /**
+     * Get the {@link PinView PinView} corresponding to the given {@link Pin Pin}.
+     *
+     * @param pin the {@code Pin}.
+     * @return the corresponding {@code PinView}.
+     */
     public PinView getPinView(Pin pin) {
         PinView pinView;
         // This is called from callInterruptListeners when an interrupt occurs, hence the need for sync.
@@ -740,7 +789,22 @@ public final class MCP23S17 {
         return pinView;
     }
 
-    // TODO: doc - does not support remove, return in order 0-15
+    /**
+     * <p>
+     * Get an {@link Iterator Iterator} over all the {@link PinView PinView}s for this {@code MCP23S17}.
+     * </p>
+     * <p>
+     * The returned {@code Iterator} returns the {@code PinView}s in the order of their pin numbers (i.e. the
+     * {@code PinView} for {@link Pin#PIN0 PIN0} comes first and the {@code PinView} for {@link Pin#PIN15 PIN15} comes
+     * last). The returned {@code Iterator} does not support {@linkplain Iterator#remove() removal of elements}.
+     * </p>
+     * <p>
+     * Note that if certain {@code PinView}s have not yet been lazily-loaded, they will be loaded as needed by the
+     * returned {@code Iterator}.
+     * </p>
+     *
+     * @return an iterator over all the {@link PinView PinView}s for this {@code MCP23S17}.
+     */
     public Iterator<PinView> getPinViewIterator() {
         return new Iterator<>() {
 
@@ -761,90 +825,201 @@ public final class MCP23S17 {
         };
     }
 
-    // TODO: doc - no error checking for whether ints enabled
+    /**
+     * <p>
+     * Add a global {@linkplain InterruptListener interrupt listener}.
+     * </p>
+     * <p>
+     * This does no error checking with respect to whether or not interrupts are enabled.
+     * </p>
+     *
+     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
+     *
+     * @param listener the global listener to add.
+     * @throws IllegalArgumentException if the given global listener is already registered.
+     * @throws NullPointerException if the given global listener is {@code null}.
+     */
     public void addGlobalListener(InterruptListener listener) {
         synchronized (globalListeners) {
-            if (globalListeners.contains(listener)) {
-                throw new IllegalArgumentException("listener already registered");
+            if (globalListeners.contains(
+                    Objects.requireNonNull(listener, "cannot add null global listener")
+            )) {
+                throw new IllegalArgumentException("global listener already registered");
             }
-            globalListeners.add(Objects.requireNonNull(listener, "cannot add null listener"));
+            globalListeners.add(listener);
         }
     }
 
+    /**
+     * Remove a global {@linkplain InterruptListener interrupt listener}.
+     *
+     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
+     *
+     * @param listener the global listener to remove.
+     * @throws IllegalArgumentException if the given global listener was not previously registered.
+     * @throws NullPointerException if the given global listener is {@code null}.
+     */
     public void removeGlobalListener(InterruptListener listener) {
         synchronized (globalListeners) {
-            if (!globalListeners.contains(listener)) {
-                throw new IllegalArgumentException("cannot remove unregistered listener");
+            if (!globalListeners.contains(
+                    Objects.requireNonNull(listener, "cannot remove null global listener")
+            )) {
+                throw new IllegalArgumentException("cannot remove unregistered global listener");
             }
             globalListeners.remove(listener);
         }
     }
 
+    /**
+     * Initiate SPI communication with the chip and write a byte to the register pointed to by the given address.
+     *
+     * @param registerAddress the register address.
+     * @param value the value to write to the register.
+     * @throws IOException if the SPI write procedure fails.
+     */
     private void write(byte registerAddress, byte value) throws IOException {
         try {
             chipSelect.low();
             spi.write(WRITE_OPCODE, registerAddress, value);
         } finally {
+            // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
             chipSelect.high();
         }
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the IODIRA byte to the IODIRA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeIODIRA() throws IOException {
         write(ADDR_IODIRA, IODIRA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the IODIRB byte to the IODIRB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeIODIRB() throws IOException {
         write(ADDR_IODIRB, IODIRB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the IPOLA byte to the IPOLA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeIPOLA() throws IOException {
         write(ADDR_IPOLA, IPOLA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the IPOLB byte to the IPOLB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeIPOLB() throws IOException {
         write(ADDR_IPOLB, IPOLB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the GPINTENA byte to the GPINTENA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeGPINTENA() throws IOException {
         write(ADDR_GPINTENA, GPINTENA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the GPINTENB byte to the GPINTENB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeGPINTENB() throws IOException {
         write(ADDR_GPINTENB, GPINTENB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the DEFVALA byte to the DEFVALA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeDEFVALA() throws IOException {
         write(ADDR_DEFVALA, DEFVALA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the DEFVALB byte to the DEFVALB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeDEFVALB() throws IOException {
         write(ADDR_DEFVALB, DEFVALB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the INTCONA byte to the INTCONA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeINTCONA() throws IOException {
         write(ADDR_INTCONA, INTCONA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the INTCONB byte to the INTCONB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeINTCONB() throws IOException {
         write(ADDR_INTCONB, INTCONB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the GPPUA byte to the GPPUA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeGPPUA() throws IOException {
         write(ADDR_GPPUA, GPPUA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the GPPUB byte to the GPPUB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeGPPUB() throws IOException {
         write(ADDR_GPPUB, GPPUB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the OLATA byte to the OLATA register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeOLATA() throws IOException {
         write(ADDR_OLATA, OLATA);
     }
 
+    /**
+     * Initiate SPI communication with the chip and write the OLATB byte to the OLATB register.
+     *
+     * @throws IOException if the SPI write procedure fails.
+     */
     public void writeOLATB() throws IOException {
         write(ADDR_OLATB, OLATB);
     }
 
+    /**
+     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address.
+     *
+     * @param registerAddress the register address.
+     * @return the byte read from the register.
+     * @throws IOException if the SPI read procedure fails.
+     */
     private byte read(byte registerAddress) throws IOException {
         byte data;
         try {
@@ -852,11 +1027,20 @@ public final class MCP23S17 {
             // The 0x00 byte is just arbitrary filler.
             data = spi.write(READ_OPCODE, registerAddress, (byte) 0x00)[2];
         } finally {
+            // Make sure the chip select line is brought high again in finally block so that failure may be recoverable.
             chipSelect.high();
         }
         return data;
     }
 
+    /**
+     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address. This
+     * will rethrow any {@link IOException IOException}s that occur as {@link RuntimeException RuntimeException}s.
+     *
+     * @param registerAddress the register address.
+     * @return the byte read from the register.
+     * @throws RuntimeException if the SPI read procedure fails (rethrown from {@code IOException}).
+     */
     private byte uncheckedRead(byte registerAddress) {
         try {
             return read(registerAddress);
@@ -865,14 +1049,32 @@ public final class MCP23S17 {
         }
     }
 
+    /**
+     * This is the callback for when port A interrupts occur. Read the INTFA and INTCAPA registers and alert all the
+     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
+     */
     private void handlePortAInterrupt() {
         callInterruptListeners(uncheckedRead(ADDR_INTFA), uncheckedRead(ADDR_INTCAPA), PORT_A_PINS);
     }
 
+    /**
+     * This is the callback for when port B interrupts occur. Read the INTFB and INTCAPB registers and alert all the
+     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
+     */
     private void handlePortBInterrupt() {
         callInterruptListeners(uncheckedRead(ADDR_INTFB), uncheckedRead(ADDR_INTCAPB), PORT_B_PINS);
     }
 
+    /**
+     * Using the given state of the INTFx register, determine which of the given {@linkplain Pin pins} is responsible
+     * for generating an interrupt. Then, call all the global listeners and pin-specific listeners for the pin which
+     * generated the interrupt with the captured value of the pin at the time of the interrupt.
+     *
+     * @param intf the state of the INTFx register at the time of the interrupt.
+     * @param intcap the state of the INTCAPx register at the time of the interrupt.
+     * @param pins either {@link MCP23S17#PORT_A_PINS PORT_A_PINS} or {@link MCP23S17#PORT_B_PINS PORT_B_PINS},
+     *             whichever is appropriate.
+     */
     private void callInterruptListeners(byte intf, byte intcap, Pin[] pins) {
         for (Pin pin : pins) {
             if (pin.getCorrespondingBit(intf)) {
@@ -882,7 +1084,7 @@ public final class MCP23S17 {
                         listener.onInterrupt(capturedValue, pin);
                     }
                 }
-                // This can in rare cases where the IO Extender is already configured create a PinView object before the
+                // This can in rare cases where the IO expander is already configured create a PinView object before the
                 // user indirectly creates it lazily...
                 getPinView(pin).relayInterruptToListeners(capturedValue);
                 break;
@@ -890,6 +1092,15 @@ public final class MCP23S17 {
         }
     }
 
+    /**
+     * Instantiate a new {@code MCP23S17} object with no interrupts.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @return a new {@code MCP23S17} object with no interrupts.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
     public static MCP23S17 newWithoutInterrupts(SpiChannel spiChannel,
                                                 GpioPinDigitalOutput chipSelect)
             throws IOException {
@@ -901,6 +1112,16 @@ public final class MCP23S17 {
         );
     }
 
+    /**
+     * Instantiate a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @param interrupt the interrupt {@linkplain GpioPinDigitalInput input pin}.
+     * @return a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output or tied interrupt input is {@code null}.
+     */
     public static MCP23S17 newWithTiedInterrupts(SpiChannel spiChannel,
                                                  GpioPinDigitalOutput chipSelect,
                                                  GpioPinDigitalInput interrupt)
@@ -920,6 +1141,17 @@ public final class MCP23S17 {
         return ioExpander;
     }
 
+    /**
+     * Instantiate a new {@code MCP23S17} object with individual port A and port B interrupt lines.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the interrupt {@linkplain GpioPinDigitalInput input pin} for port A.
+     * @param portBInterrupt the interrupt {@linkplain GpioPinDigitalInput input pin} for port B.
+     * @return a new {@code MCP23S17} object with individual port A and port B interrupt lines.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output or either of the interrupt inputs is {@code null}.
+     */
     public static MCP23S17 newWithInterrupts(SpiChannel spiChannel,
                                              GpioPinDigitalOutput chipSelect,
                                              GpioPinDigitalInput portAInterrupt,
@@ -936,6 +1168,16 @@ public final class MCP23S17 {
         return ioExpander;
     }
 
+    /**
+     * Instantiate a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the interrupt {@linkplain GpioPinDigitalInput input pin} for port A.
+     * @return a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output or the port A interrupt inputs is {@code null}.
+     */
     public static MCP23S17 newWithPortAInterrupts(SpiChannel spiChannel,
                                                   GpioPinDigitalOutput chipSelect,
                                                   GpioPinDigitalInput portAInterrupt)
@@ -950,6 +1192,16 @@ public final class MCP23S17 {
         return ioExpander;
     }
 
+    /**
+     * Instantiate a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
+     *
+     * @param spiChannel the {@link SpiChannel SpiChannel} that the chip is connected to.
+     * @param chipSelect the {@linkplain GpioPinDigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portBInterrupt the interrupt {@linkplain GpioPinDigitalInput input pin} for port B.
+     * @return a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
+     * @throws IOException if the instantiation of the {@link SpiDevice SpiDevice} object fails.
+     * @throws NullPointerException if the given chip select output or the port B interrupt inputs is {@code null}.
+     */
     public static MCP23S17 newWithPortBInterrupts(SpiChannel spiChannel,
                                                   GpioPinDigitalOutput chipSelect,
                                                   GpioPinDigitalInput portBInterrupt)
@@ -964,6 +1216,13 @@ public final class MCP23S17 {
         return ioExpander;
     }
 
+    /**
+     * Attach a {@link Runnable Runnable} callback to the given {@linkplain GpioPinDigitalInput input pin} to be invoked
+     * whenever the pin goes low.
+     *
+     * @param interrupt the input pin to attach the interrupt to.
+     * @param callback the {@code Runnable} callback.
+     */
     private static void attachInterruptOnLow(GpioPinDigitalInput interrupt, Runnable callback) {
         interrupt.addListener(new GpioPinListenerDigital() {
             @Override
