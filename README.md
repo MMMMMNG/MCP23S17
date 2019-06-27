@@ -10,7 +10,8 @@ to build a JAR containing the MCP23S17 class only,
 
     ./gradlew shadowJar
     
-to build a shadow JAR containing the MCP23S17 class *and* the pi4j dependency,
+to build a shadow JAR containing the MCP23S17 class *and* the
+[pi4j](https://pi4j.com) dependency,
 
     ./gradlew sourcesJar
     
