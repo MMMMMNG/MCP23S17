@@ -19,4 +19,4 @@ to build a sources JAR, and/or
 
     ./gradlew javadocJar
     
-to build javadoc JAR.
+to build a javadoc JAR.
