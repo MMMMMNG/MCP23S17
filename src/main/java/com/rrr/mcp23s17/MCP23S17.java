@@ -12,11 +12,56 @@ import com.pi4j.io.spi.SpiMode;
 import java.io.IOException;
 import java.util.*;
 
-// TODO: doc -- register reads/writes are not thread safe!
+/**
+ * <p>
+ * An interface for the MCP23S17 SPI IO expander for Raspberry Pi.
+ * </p>
+ * <p>
+ * This class abstracts away the technical details of communicating with the chip via SPI, allowing for simple access
+ * via {@link PinView PinView} objects. One {@code PinView} object exists per {@link Pin Pin}, and {@code PinView}
+ * objects are initialized lazily. {@code PinView} references are returned by
+ * {@link MCP23S17#getPinView(Pin) getPinView}.
+ * </p>
+ * <p>
+ * It is critical to note that, to allow for writing to the MCP23S17's registers in batches, the setter methods on
+ * {@code PinView}s (or, in general, the methods that modify state for that pin) do not actually perform a write to the
+ * chip; they merely set program state. In order to write to the chip, each invocation of a state-changing
+ * {@code PinView} method (or a batch thereof) must be followed by a call to the appropriate {@code writeXXX} method(s)
+ * on the {@code MCP23S17} object.
+ * </p>
+ * <p>
+ * To setup the chip to use interrupts, the interrupt {@linkplain GpioPinDigitalInput input pins} must be passed in
+ * during construction at the appropriate static factory method; one static factory method is provided for each possible
+ * interrupt setup. Once a chip is setup for interrupts, callbacks for both
+ * {@linkplain PinView#addListener(InterruptListener) pin-specific interrupts} and
+ * {@linkplain MCP23S17#addGlobalListener(InterruptListener) global interrupts} may be registered. Do note, however,
+ * that each pin that is supposed to generate interrupts must be setup as such in the appropriate registers. Refer to
+ * the <a href=http://ww1.microchip.com/downloads/en/DeviceDoc/20001952C.pdf>MCP23S17 datasheet</a> for more
+ * information.
+ * </p>
+ * <p>
+ * The only mutable state in {@code MCP23S17} objects are the bytes representing the register values on the chip, which
+ * are accessed non-synchronously in both this class and its inner class, {@code PinView}. As such, any actions
+ * modifying these bytes (the only methods that modify them are contained in {@code PinView}) must be synchronized
+ * externally, if necessary. Also, calls to the {@code writeXXX} methods must be synchronized if used in threaded
+ * applications as otherwise they will all attempt to write to the SPI bus at once.
+ * </p>
+ *
+ * @author Robert Russell
+ */
 public final class MCP23S17 {
 
+    /**
+     * <p>
+     * Enum for each physical GPIO pin on the MCP23S17 chip.
+     * </p>
+     * <p>
+     * The pins are renumbered so that port A's pins are in order as {@code PIN0} through {@code PIN7} and port B's pins
+     * are in order as {@code PIN8} through {@code PIN15}.
+     * </p>
+     * @author Robert Russell
+     */
     public enum Pin {
-
         // Port A
         PIN0(0, true),
         PIN1(1, true),
@@ -39,26 +84,63 @@ public final class MCP23S17 {
 
         private final int pinNumber;
         private final boolean portA;
+        /**
+         * A bit mask which is used in {@link Pin#getCorrespondingBit(byte) getCorrespondingBit} and
+         * {@link Pin#setCorrespondingBit(byte, boolean) setCorrespondingBit}.
+         */
         private final byte mask;
 
+        /**
+         * @param bitIndex the index of the pin in the bytes which concern it (i.e. the pin number <code>mod 8</code>).
+         * @param portA whether or not this pin is in port A.
+         */
         Pin(int bitIndex, boolean portA) {
             this.pinNumber = bitIndex + (portA ? 0 : 8);
             this.portA = portA;
             this.mask = (byte) (1 << bitIndex);
         }
 
+        /**
+         * <p>
+         * Get the pin number.
+         * </p>
+         * <p>
+         * The pins are numbered so that port A's pins are in order as {@code 0} through {@code 7} and port B's pins are
+         * in order as {@code 8} through {@code 15}.
+         * </p>
+         *
+         * @return the pin number.
+         */
         public int getPinNumber() {
             return pinNumber;
         }
 
+        /**
+         * Get whether or not this {@code Pin} is in port A.
+         *
+         * @return whether or not this {@code Pin} is in port A.
+         */
         public boolean isPortA() {
             return portA;
         }
 
+        /**
+         * Get whether or not this {@code Pin} is in port B.
+         *
+         * @return whether or not this {@code Pin} is in port B.
+         */
         public boolean isPortB() {
             return !portA;
         }
 
+        /**
+         * Given two bytes, one corresponding to port A and one corresponding to port B, return the one corresponding to
+         * the port which this {@code Pin} is in.
+         *
+         * @param byteA the byte corresponding to port A.
+         * @param byteB the byte corresponding to port B.
+         * @return the byte corresponding to the port which this {@code Pin} is in.
+         */
         private byte resolveCorrespondingByte(byte byteA, byte byteB) {
             if (isPortA()) {
                 return byteA;
@@ -66,10 +148,26 @@ public final class MCP23S17 {
             return byteB;
         }
 
+        /**
+         * Given a byte, index it and return the bit corresponding to this pin. (The index is given by this
+         * {@code Pin}'s {@linkplain Pin#getPinNumber() pin number} <code>mod 8</code>.)
+         *
+         * @param b the byte to index.
+         * @return the bit corresponding to this pin.
+         */
         private boolean getCorrespondingBit(byte b) {
             return (b & mask) > 0;
         }
 
+        /**
+         * Given a byte, set the bit corresponding to this pin to the given value and return the resulting byte. (The
+         * index at which the bit is set in the byte is given by this {@code Pin}'s
+         * {@linkplain Pin#getPinNumber() pin number} <code>mod 8</code>.)
+         *
+         * @param b the byte to set/clear the bit in.
+         * @param value the value to set at the corresponding bit.
+         * @return the resulting byte.
+         */
         private byte setCorrespondingBit(byte b, boolean value) {
             if (value) {
                 return (byte) (b | mask);
@@ -77,8 +175,16 @@ public final class MCP23S17 {
             return (byte) (b & ~mask);
         }
 
+        /**
+         * Get the {@code Pin} corresponding to the given pin number.
+         *
+         * @param pinNumber the pin number.
+         * @return the {@code Pin} corresponding to the given pin number.
+         * @throws IllegalArgumentException if the given pin number is invalid (i.e. less than 0 or greater than 15).
+         */
         public static Pin fromPinNumber(int pinNumber) {
             switch (pinNumber) {
+                // Port A
                 case 0:
                     return PIN0;
                 case 1:
@@ -96,6 +202,7 @@ public final class MCP23S17 {
                 case 7:
                     return PIN7;
 
+                // Port B
                 case 8:
                     return PIN8;
                 case 9:
@@ -119,21 +226,57 @@ public final class MCP23S17 {
         }
     }
 
+    /**
+     * An abstraction of each physical GPIO pin on a MCP23S17 IO expander chip.
+     *
+     * @author Robert Russell
+     * @see MCP23S17
+     */
     public final class PinView {
 
         private final Pin pin;
-        // TODO: doc -- we sync on this
+
+        /**
+         * The listeners registered specifically to this pin (i.e. not global listeners). This object is synchronized on
+         * so that listeners cannot be added or removed while an interrupt is being processed for vice versa.
+         */
         private final Collection<InterruptListener> listeners = new HashSet<>(0);
 
         private PinView(Pin pin) {
             this.pin = pin;
         }
 
+        /**
+         * Get the {@link Pin Pin} which this {@code PinView} represents.
+         *
+         * @return the {@link Pin Pin} which this {@code PinView} represents.
+         */
         public Pin getPin() {
             return pin;
         }
 
-        public void set(boolean value) throws IOException {
+        /**
+         * Get the state of the pin. If the pin is output, then the corresponding bit in the corresponding OLATx byte is
+         * returned (note: not the actual value in the MCP23S17's OLATx register). If the pin in input, then the actual
+         * value at the pin is read and returned.
+         *
+         * @return the state of the pin.
+         * @throws IOException if the pin is input and SPI communication with the MCP23S17 chip failed.
+         */
+        public boolean get() throws IOException {
+            if (isOutput()) {
+                return pin.getCorrespondingBit(pin.resolveCorrespondingByte(OLATA, OLATB));
+            }
+            return pin.getCorrespondingBit(read(pin.resolveCorrespondingByte(ADDR_GPIOA, ADDR_GPIOB)));
+        }
+
+        /**
+         * Set the pin to the given state. More specifically, this sets the corresponding bit in the corresponding OLATx
+         * byte (note: not the actual value in the MCP23S17's OLATx register) to the given state.
+         *
+         * @param value the value to set on the pin.
+         */
+        public void set(boolean value) {
             if (pin.isPortA()) {
                 OLATA = pin.setCorrespondingBit(OLATA, value);
                 // write(ADDR_OLATA, OLATA);
@@ -143,22 +286,50 @@ public final class MCP23S17 {
             }
         }
 
-        public boolean get() throws IOException {
-            if (isOutput()) {
-                return pin.getCorrespondingBit(pin.resolveCorrespondingByte(OLATA, OLATB));
-            }
-            return pin.getCorrespondingBit(read(pin.resolveCorrespondingByte(ADDR_GPIOA, ADDR_GPIOB)));
+        /**
+         * Sets the pin high. More specifically, this sets the corresponding bit in the corresponding OLATx byte (note:
+         * not the actual value in the MCP23S17's OLATx register).
+         */
+        public void set() {
+            set(true);
         }
 
+        /**
+         * Clears the pin (sets it low). More specifically, this clears the corresponding bit in the corresponding OLATx
+         * byte (note: not the actual value in the MCP23S17's OLATx register).
+         */
+        public void clear() {
+            set(false);
+        }
+
+        /**
+         * Get whether or not this pin is input. More specifically, this returns the corresponding bit in the
+         * corresponding IODIRx byte (note: not the actual value in the MCP23S17's IODIRx register).
+         *
+         * @return whether or not this pin is input.
+         */
         public boolean isInput() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(IODIRA, IODIRB));
         }
 
+        /**
+         * Get whether or not this pin is output. More specifically, this returns the inverse of the corresponding bit
+         * in the corresponding IODIRx byte (note: not the actual value in the MCP23S17's IODIRx register).
+         *
+         * @return whether or not this pin is output.
+         */
         public boolean isOutput() {
             return !isInput();
         }
 
-        public void setDirection(boolean input) throws IOException {
+        /**
+         * Set the pin to the given direction. More specifically, this sets the corresponding bit in the corresponding
+         * IODIRx byte (note: not the actual value in the MCP23S17's IODIRx register) if the pin direction is input, and
+         * clears it if the pin direction is output.
+         *
+         * @param input true for input; false for output.
+         */
+        public void setDirection(boolean input) {
             if (pin.isPortA()) {
                 IODIRA = pin.setCorrespondingBit(IODIRA, input);
                 // write(ADDR_IODIRA, IODIRA);
@@ -168,19 +339,41 @@ public final class MCP23S17 {
             }
         }
 
-        public void setAsInput() throws IOException {
+        /**
+         * Set the pin to be input. More specifically, this sets the corresponding bit in the corresponding IODIRx byte
+         * (note: not the actual value in the MCP23S17's IODIRx register).
+         */
+        public void setAsInput() {
             setDirection(true);
         }
 
-        public void setAsOutput() throws IOException {
+        /**
+         * Set the pin to be output. More specifically, this clears the corresponding bit in the corresponding IODIRx
+         * byte (note: not the actual value in the MCP23S17's IODIRx register).
+         */
+        public void setAsOutput() {
             setDirection(false);
         }
 
+        /**
+         * Get whether or not this pin's input is inverted. More specifically, this returns the corresponding bit in the
+         * corresponding IPOLx byte (note: not the actual value in the MCP23S17's IPOLx register).
+         *
+         * @return whether or not this pin's input os inverted.
+         */
         public boolean isInputInverted() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(IPOLA, IPOLB));
         }
 
-        public void setInverted(boolean inverted) throws IOException {
+        /**
+         * Set whether or not the pin's input is inverted. More specifically, this sets the corresponding bit in the
+         * corresponding IPOLx byte (note: not the actual value in the MCP23S17's IPOLx register) if the pin's input is
+         * to be inverted, and clears it if the pin's input is to not be inverted.
+         *
+         * @param inverted whether or not the pin's input is to be inverted.
+         */
+        // TODO: this name is misleading and inconsistent; should be "isInputInverted"
+        public void setInverted(boolean inverted) {
             if (pin.isPortA()) {
                 IPOLA = pin.setCorrespondingBit(IPOLA, inverted);
                 // write(ADDR_IPOLA, IPOLA);
@@ -190,19 +383,40 @@ public final class MCP23S17 {
             }
         }
 
-        public void invertInput() throws IOException {
+        /**
+         * Set the pin's input to be inverted. More specifically, this sets the corresponding bit in the corresponding
+         * IPOLx byte (note: not the actual value in the MCP23S17's IPOLx register).
+         */
+        public void invertInput() {
             setInverted(true);
         }
 
-        public void uninvertInput() throws IOException {
+        /**
+         * Set the pin's input to not be inverted. More specifically, this clears the corresponding bit in the
+         * corresponding IPOLx byte (note: not the actual value in the MCP23S17's IPOLx register).
+         */
+        public void uninvertInput() {
             setInverted(false);
         }
 
+        /**
+         * Get whether or not this pin's interrupt is enabled. More specifically, this returns the corresponding bit in
+         * the corresponding GPINTENx byte (note: not the actual value in the MCP23S17's GPINTENx register).
+         *
+         * @return whether or not this pin's interrupt is enabled.
+         */
         public boolean isInterruptEnabled() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(GPINTENA, GPINTENB));
         }
 
-        public void setInterruptEnabled(boolean interruptEnabled) throws IOException {
+        /**
+         * Set whether or not the pin's interrupt is enabled. More specifically, this sets the corresponding bit in the
+         * corresponding GPINTENx byte (note: not the actual value in the MCP23S17's GPINTENx register) if interrupts
+         * are enabled, and clears it if interrupts are disabled.
+         *
+         * @param interruptEnabled whether or not to enable interrupts.
+         */
+        public void setInterruptEnabled(boolean interruptEnabled) {
             if (pin.isPortA()) {
                 GPINTENA = pin.setCorrespondingBit(GPINTENA, interruptEnabled);
                 // write(ADDR_GPINTENA, GPINTENA);
@@ -212,19 +426,41 @@ public final class MCP23S17 {
             }
         }
 
-        public void enableInterrupt() throws IOException {
+        /**
+         * Enable the pin's interrupts. More specifically, this sets the corresponding bit in the corresponding GPINTENx
+         * byte (note: not the actual value in the MCP23S17's GPINTENx register).
+         */
+        public void enableInterrupt() {
             setInterruptEnabled(true);
         }
 
-        public void disableInterrupt() throws IOException {
+        /**
+         * Disable the pin's interrupts. More specifically, this clears the corresponding bit in the corresponding
+         * GPINTENx byte (note: not the actual value in the MCP23S17's GPINTENx register).
+         */
+        public void disableInterrupt() {
             setInterruptEnabled(false);
         }
 
+        /**
+         * Get the default comparison value for comparison interrupt mode for this pin. More specifically, this returns
+         * the corresponding bit in the corresponding DEFVALx byte (note: not the actual value in the MCP23S17's DEFVALx
+         * register).
+         *
+         * @return the default comparison value for comparison interrupt mode for this pin.
+         */
         public boolean getDefaultComparisonValue() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(DEFVALA, DEFVALB));
         }
 
-        public void setDefaultComparisonValue(boolean value) throws IOException {
+        /**
+         * Set the default comparison value for comparison interrupt mode for this pin. More specifically, this sets the
+         * corresponding bit in the corresponding DEFVALx byte (note: not the actual value in the MCP23S17's DEFVALx
+         * register) to the given value.
+         *
+         * @param value the default comparison value for comparison interrupt mode for this pin.
+         */
+        public void setDefaultComparisonValue(boolean value) {
             if (pin.isPortA()) {
                 DEFVALA = pin.setCorrespondingBit(DEFVALA, value);
                 // write(ADDR_DEFVALA, DEFVALA);
@@ -234,15 +470,36 @@ public final class MCP23S17 {
             }
         }
 
+        /**
+         * Get whether or not this pin is in interrupt comparison mode (as opposed to change mode). More specifically,
+         * this returns the corresponding bit in the corresponding INTCONx byte (note: not the actual value in the
+         * MCP23S17's INTCONx register).
+         *
+         * @return whether or not this pin is in interrupt comparison mode.
+         */
         public boolean isInterruptComparisonMode() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(INTCONA, INTCONB));
         }
 
+        /**
+         * Get whether or not this pin is in interrupt change mode (as opposed to comparison mode). More specifically,
+         * this returns the inverse of the corresponding bit in the corresponding INTCONx byte (note: not the actual
+         * value in the MCP23S17's INTCONx register).
+         *
+         * @return whether or not this pin is in interrupt change mode.
+         */
         public boolean isInterruptChangeMode() {
             return !isInterruptComparisonMode();
         }
 
-        public void setInterruptMode(boolean comparison) throws IOException {
+        /**
+         * Set the interrupt mode for this pin. More specifically, this sets the corresponding bit in the corresponding
+         * INTCONx byte (note: not the actual value in the MCP23S17's INTCONx register) if transitioning to comparison
+         * mode, and clears it if transitioning to change mode.
+         *
+         * @param comparison true for comparison mode; false for change mode.
+         */
+        public void setInterruptMode(boolean comparison) {
             if (pin.isPortA()) {
                 INTCONA = pin.setCorrespondingBit(INTCONA, comparison);
                 // write(ADDR_INTCONA, INTCONA);
@@ -252,19 +509,40 @@ public final class MCP23S17 {
             }
         }
 
-        public void toInterruptComparisonMode() throws IOException {
+        /**
+         * Set the interrupt mode to comparison mode. More specifically, this sets the corresponding bit in the
+         * corresponding INTCONx byte (note: not the actual value in the MCP23S17's INTCONx register).
+         */
+        public void toInterruptComparisonMode() {
             setInterruptMode(true);
         }
 
-        public void toInterruptChangeMode() throws IOException {
+        /**
+         * Set the interrupt mode to change mode. More specifically, this clears the corresponding bit in the
+         * corresponding INTCONx byte (note: not the actual value in the MCP23S17's INTCONx register).
+         */
+        public void toInterruptChangeMode() {
             setInterruptMode(false);
         }
 
+        /**
+         * Get whether or not this pin has a pull-up resistor enabled. More specifically, this returns the corresponding
+         * bit in the corresponding GPPUx byte (note: not the actual value in the MCP23S17's GPPUx register).
+         *
+         * @return whether or not this pin has a pull-up resistor enabled.
+         */
         public boolean isPulledUp() {
             return pin.getCorrespondingBit(pin.resolveCorrespondingByte(GPPUA, GPPUB));
         }
 
-        public void setPulledUp(boolean pulledUp) throws IOException {
+        /**
+         * Set whether or not this pin has a pull-up resistor enabled. More specifically, this sets the corresponding
+         * bit in the corresponding GPPUx byte (note: not the actual value in the MCP23S17's GPPUx register) if pull-up
+         * resistors are being enabled, and clears it if pull-up resistors are being disabled.
+         *
+         * @param pulledUp  whether or not to enable pull-up resistors.
+         */
+        public void setPulledUp(boolean pulledUp) {
             if (pin.isPortA()) {
                 GPPUA = pin.setCorrespondingBit(GPPUA, pulledUp);
                 // write(ADDR_GPPUA, GPPUA);
@@ -274,32 +552,71 @@ public final class MCP23S17 {
             }
         }
 
-        public void enablePullUp() throws IOException {
+        /**
+         * Enables pull-up resistors for this pin. More specifically, this sets the corresponding bit in the
+         * corresponding GPPUx byte (note: not the actual value in the MCP23S17's GPPUx register).
+         */
+        public void enablePullUp() {
             setPulledUp(true);
         }
 
-        public void disablePullUp() throws IOException {
+        /**
+         * Disables pull-up resistors for this pin. More specifically, this clears the corresponding bit in the
+         * corresponding GPPUx byte (note: not the actual value in the MCP23S17's GPPUx register).
+         */
+        public void disablePullUp() {
             setPulledUp(false);
         }
 
+        /**
+         * <p>
+         * Add an {@linkplain InterruptListener interrupt listener} for this pin.
+         * </p>
+         * <p>
+         * This does no error checking with respect to whether or not interrupts are enabled for this pin or whether or
+         * not they even could be effectively enabled.
+         * </p>
+         *
+         * @implSpec This is synchronized on the collection of listeners, so it is thread safe.
+         *
+         * @param listener the listener to add.
+         * @throws IllegalArgumentException if the given listener is already registered.
+         * @throws NullPointerException if the given listener is {@code null}.
+         */
         public void addListener(InterruptListener listener) {
             synchronized (listeners) {
-                if (listeners.contains(listener)) {
+                if (listeners.contains(Objects.requireNonNull(listener, "cannot add null listener"))) {
                     throw new IllegalArgumentException("listener already registered");
                 }
-                listeners.add(Objects.requireNonNull(listener, "cannot add null listener"));
+                listeners.add(listener);
             }
         }
 
+        /**
+         * Remove an {@linkplain InterruptListener interrupt listener} from this pin.
+         *
+         * @implSpec This is synchronized on the collection of listeners, so it is thread safe.
+         *
+         * @param listener the listener to remove.
+         * @throws IllegalArgumentException if the given listener was not previously registered.
+         * @throws NullPointerException if the given listener is {@code null}.
+         */
         public void removeListener(InterruptListener listener) {
             synchronized (listeners) {
-                if (!listeners.contains(listener)) {
+                if (!listeners.contains(Objects.requireNonNull(listener, "cannot remove null listener"))) {
                     throw new IllegalArgumentException("cannot remove unregistered listener");
                 }
                 listeners.remove(listener);
             }
         }
 
+        /**
+         * Invoke all the interrupt listeners registered to receive events specifically for this pin with the given
+         * captured value. This is called from
+         * {@link MCP23S17#callInterruptListeners(byte, byte, Pin[]) callInterruptListeners}.
+         *
+         * @param capturedValue the value on the pin at the time of the interrupt.
+         */
         private void relayInterruptToListeners(boolean capturedValue) {
             synchronized (listeners) {
                 for (InterruptListener listener : listeners) {
@@ -309,12 +626,28 @@ public final class MCP23S17 {
         }
     }
 
+    /**
+     * A {@linkplain FunctionalInterface functional interface} representing an interrupt listener callback.
+     * {@code InterruptListener}s are registered via
+     * {@link MCP23S17#addGlobalListener(InterruptListener) addGlobalListener} on {@link MCP23S17 MCP23S17} objects and
+     * {@link PinView#addListener(InterruptListener) addListener} on {@link PinView PinView} objects, and removed by the
+     * similarly-named methods.
+     *
+     * @author Robert Russell
+     */
     @FunctionalInterface
     public interface InterruptListener {
 
+        /**
+         * Called whenever an interrupt occurs on a pin for which this listener is registered to receive events.
+         *
+         * @param capturedValue the value on the pin at the time of the interrupt.
+         * @param pin the {@link Pin Pin} on which the interrupt occurred.
+         */
         void onInterrupt(boolean capturedValue, Pin pin);
     }
 
+    // TODO: this should be settable by the user
     private static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
 
     // Register addresses for IOCON.BANK = 0
@@ -359,6 +692,7 @@ public final class MCP23S17 {
     private final GpioPinDigitalInput portAInterrupt;
     private final GpioPinDigitalInput portBInterrupt;
 
+    // TODO: make these atomic?
     private byte IODIRA = (byte) 0b11111111;
     private byte IODIRB = (byte) 0b11111111;
     private byte IPOLA = (byte) 0b00000000;
@@ -406,8 +740,9 @@ public final class MCP23S17 {
         return pinView;
     }
 
+    // TODO: doc - does not support remove, return in order 0-15
     public Iterator<PinView> getPinViewIterator() {
-        return new Iterator<PinView>() {
+        return new Iterator<>() {
 
             private int current = 0;
 
@@ -426,6 +761,7 @@ public final class MCP23S17 {
         };
     }
 
+    // TODO: doc - no error checking for whether ints enabled
     public void addGlobalListener(InterruptListener listener) {
         synchronized (globalListeners) {
             if (globalListeners.contains(listener)) {
