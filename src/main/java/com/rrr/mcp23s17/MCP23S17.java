@@ -3,6 +3,8 @@ package com.rrr.mcp23s17;
 import com.pi4j.context.Context;
 import com.pi4j.io.gpio.digital.*;
 import com.pi4j.io.spi.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
@@ -647,6 +649,7 @@ public final class MCP23S17 {
         void onInterrupt(boolean capturedValue, Pin pin);
     }
 
+    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
     // todo: this should be settable by the user
     private static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
 
@@ -1448,12 +1451,12 @@ public final class MCP23S17 {
             do {
                 firstIC.handlePortAInterrupt();
                 firstIC.handlePortBInterrupt();
-                firstIC.delay(10);
+                delay(10);
                 ++i;
             } while (interrupts[0].state().isLow() && i < 100);
 
             if (i > 1) {
-                firstIC.log.warn("read {} times to clear interrupt.", i);
+                LOG.warn("read {} times to clear interrupt.", i);
             }
         });
 
@@ -1471,11 +1474,11 @@ public final class MCP23S17 {
                 do {
                     currentIC.handlePortAInterrupt();
                     currentIC.handlePortBInterrupt();
-                    currentIC.delay(10);
+                    delay(10);
                     ++j;
                 } while (interrupt.state().isLow() && j < 100);
                 if (j > 1) {
-                    currentIC.log.warn("read {} times to clear interrupt.", j);
+                    LOG.warn("read {} times to clear interrupt.", j);
                 }
             });
         }
@@ -1629,6 +1632,20 @@ public final class MCP23S17 {
      */
     public Spi getSpi() {
         return spi;
+    }
+
+    /**
+     * Utility function to sleep for the specified amount of milliseconds.
+     * An {@link InterruptedException} will be caught and ignored while setting the interrupt flag again.
+     *
+     * @param milliseconds Time in milliseconds to sleep
+     */
+    private static void delay(long milliseconds) {
+        try {
+            Thread.sleep(milliseconds);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
 }
