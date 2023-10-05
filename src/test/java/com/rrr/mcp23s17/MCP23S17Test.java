@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 class MCP23S17Test {
 
@@ -57,20 +59,6 @@ class MCP23S17Test {
             pins.add(pin);
         }
         return pins;
-    }
-
-    private byte[] readBytesFromMockSpi(MockSpi spi, int amount) {
-        var bytes = new byte[amount];
-        spi.read(bytes, amount);
-        return bytes;
-    }
-
-    private byte[] getByteArrayOfNegOnes(int amount) {
-        var bytes = new byte[amount];
-        for (int i = 0; i < amount; i++) {
-            bytes[i] = -1;
-        }
-        return bytes;
     }
 
     @Test
@@ -130,21 +118,40 @@ class MCP23S17Test {
         var cut = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, chipSelect, interruptA);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
-        //var mockListeners = putMockListenersOnAllPins(pins);
-        var pinsToInterrupt = MCPData.builder().read().toINTCAPA()
-                .response(0, 0, 0, 1, 0, 0, 0, 0).next().toINTCAPB().build();
+        var mockListeners = putMockListenersOnAllPins(pins);
+        var pinsToInterrupt = MCPData.builder()
+                .read().toINTFA().response(0, 0, 0, 1, 0, 0, 0, 0)
+                .next().toINTCAPA()
+                .next().toINTFB()
+                .next().toINTCAPB().build();
         var setupBuffer = mockSpi.readEntireMockBuffer();
         //when
         mockSpi.write(pinsToInterrupt);
         interruptA.mockState(DigitalState.LOW);
         interruptA.mockState(DigitalState.HIGH);
-
+        var readData = mockSpi.readEntireMockBuffer();
         //then
-        assertArrayEquals(MCPData.builder().write().toIOCON().writeData(0,1,0,0,0,0,0,0).build(),setupBuffer);
+        assertArrayEquals(MCPData.builder()
+                .read().toINTFA()
+                .next().toINTCAPA()
+                .next().toINTFB()
+                .next().toINTCAPB().build(), readData);
+        assertArrayEquals(MCPData.builder().write().toIOCON().writeData(0, 1, 0, 0, 0, 0, 0, 0).build(), setupBuffer);
+        verify(mockListeners.remove(4)).onInterrupt(true, MCP23S17.Pin.PIN4);
+        verify(mockListeners.remove(11)).onInterrupt(true, MCP23S17.Pin.PIN12);
+        for(var lstnr : mockListeners){
+            verify(lstnr,never()).onInterrupt(anyBoolean(),any());
+        }
     }
 
-    private void putMockListenersOnAllPins(List<MCP23S17.PinView> pins) {
-
+    private List<MCP23S17.InterruptListener> putMockListenersOnAllPins(List<MCP23S17.PinView> pins) {
+        var listeners = new ArrayList<MCP23S17.InterruptListener>();
+        for (var pin : pins) {
+            var lstnr = mock(MCP23S17.InterruptListener.class);
+            pin.addListener(lstnr);
+            listeners.add(lstnr);
+        }
+        return listeners;
     }
 
     @Test
