@@ -3,10 +3,11 @@ package com.rrr.mcp23s17;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 /**
  * Utility class to get mock data for verification.
- *
+ * <p>
  * This class can be used to get the data "like it should be", meaning
  * it can generate data to be passed as the "expected" argument to assertEquals()
  */
@@ -183,9 +184,17 @@ public class MCPData {
         return this;
     }
 
-    MCPData next(){
-        previousData.addAll(Arrays.asList(getCurrData()));
+    MCPData next(int times, BiConsumer<MCPData, Integer> changer) {
+        for (int i = 0; i < times; i++) {
+            changer.accept(this, i);
+            previousData.addAll(Arrays.asList(getCurrData()));
+        }
         return this;
+    }
+
+    MCPData next() {
+        return this.next(1, (d, i) -> {
+        });
     }
 
     private Byte[] getCurrData() {
@@ -196,7 +205,7 @@ public class MCPData {
         return bytes;
     }
 
-    byte[] build(){
+    byte[] build() {
         int prevSize = previousData.size();
         var bytes = new byte[prevSize + 3];
         for (int i = 0; i < prevSize; i++) {
