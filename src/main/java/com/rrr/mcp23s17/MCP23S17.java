@@ -1285,7 +1285,8 @@ public final class MCP23S17 {
 
         if (readGPIORegisterOnInterrupt) {
             byte currentCapture = uncheckedRead(ADDR_GPIOA);
-            //if GPIO already changed from INTCAP then ignore.
+            //if GPIO already differs from INTCAP then ignore. This solves the problem that in practice,
+            //neighbouring pins might get pulled down because of capacitance or something.
             interruptMask &= ~(interruptCapture ^ currentCapture);
         }
         callInterruptListeners(interruptMask, interruptCapture, PORT_A_PINS);
