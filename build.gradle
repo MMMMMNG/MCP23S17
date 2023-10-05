@@ -23,9 +23,10 @@ repositories {
 dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
-    testImplementation("com.pi4j:pi4j-plugin-mock:2.3.0-SNAPSHOT")
-    implementation("com.pi4j:pi4j-core:2.3.0")
-    implementation("org.slf4j:slf4j-api:2.0.9")
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+    testImplementation 'com.pi4j:pi4j-plugin-mock:2.3.0-SNAPSHOT'
+    implementation 'com.pi4j:pi4j-core:2.3.0'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
 }
 
 tasks.register('sourcesJar', Jar) {
