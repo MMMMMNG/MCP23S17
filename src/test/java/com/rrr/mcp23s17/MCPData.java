@@ -1,7 +1,8 @@
 package com.rrr.mcp23s17;
 
+import com.pi4j.util.StringUtil;
+
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.function.BiConsumer;
 
@@ -33,17 +34,26 @@ public class MCPData {
     private static final byte ADDR_GPIOB = 0x13;
     private static final byte ADDR_OLATA = 0x14;
     private static final byte ADDR_OLATB = 0x15;
-    private static byte WRITE_OPCODE = 0x40;
-    private static byte READ_OPCODE = 0x41;
+    private static final byte WRITE_OPCODE = 0x40;
+    private static final byte READ_OPCODE = 0x41;
     private boolean writing;
     private byte registerAddr;
     private byte response;
     private byte address;
     private byte writeData;
 
-    private List<Byte> previousData = new ArrayList<>();
+    private List<MCPData> previousData = new ArrayList<>();
 
     private MCPData() {
+    }
+
+    private MCPData(MCPData copy) {
+        this.writing = copy.writing;
+        this.registerAddr = copy.registerAddr;
+        this.response = copy.response;
+        this.address = copy.address;
+        this.writeData = copy.writeData;
+        this.previousData = copy.previousData;
     }
 
     static MCPData builder() {
@@ -184,38 +194,96 @@ public class MCPData {
         return this;
     }
 
-    MCPData next(int times, BiConsumer<MCPData, Integer> changer) {
-        for (int i = 0; i < times; i++) {
-            changer.accept(this, i);
-            previousData.addAll(Arrays.asList(getCurrData()));
-        }
+    /**
+     * which bit to set in the response byte
+     *
+     * @param bit the bit numbered from LSB to MSB
+     * @return this instance to further configure or build
+     */
+    MCPData respSetBit(int bit) {
+        this.response |= 1 << bit;
         return this;
     }
 
     MCPData next() {
-        return this.next(1, (d, i) -> {
-        });
+        var copy = new MCPData(this);
+        previousData.add(this);
+        this.previousData = null;//remove circular reference, making sure this instance's next() throws
+        return copy;
     }
 
-    private Byte[] getCurrData() {
-        var bytes = new Byte[3];
-        bytes[0] = (byte) ((writing ? WRITE_OPCODE : READ_OPCODE) | address);
+    /**
+     * "renders" this instance into the byte array
+     *
+     * @return the byte array according to this instances config
+     */
+    private byte[] getCurrData() {
+        var bytes = new byte[3];
+        bytes[0] = (byte) ((writing ? WRITE_OPCODE : READ_OPCODE) | (address << 1));
         bytes[1] = registerAddr;
         bytes[2] = writing ? writeData : response;
         return bytes;
     }
 
+    /**
+     * Takes all the MCPData objects and "renders" them out into a single byte array
+     *
+     * @return the byte array to be used for SPI testing
+     */
     byte[] build() {
+        previousData.add(this);
         int prevSize = previousData.size();
-        var bytes = new byte[prevSize + 3];
+        var bytes = new byte[prevSize * 3];
         for (int i = 0; i < prevSize; i++) {
-            bytes[i] = previousData.get(i);
-        }
-        var currBs = getCurrData();
-        for (int i = 0; i < 3; i++) {
-            bytes[prevSize + i] = currBs[i];
+            var triple = previousData.get(i).getCurrData();
+            bytes[3 * i] = triple[0];
+            bytes[3 * i + 1] = triple[1];
+            bytes[3 * i + 2] = triple[2];
         }
         return bytes;
+    }
+
+    /**
+     * Takes all the MCPData objects, repeats them n times while allowing something to be changed
+     * according to the index of the repetition.
+     * Useful for testing repeated write operations to every single chip in an array
+     *
+     * @param amount  how many repetitions to perform
+     * @param changer a function that allows change of the repeated objects.
+     *                The function is supplied the current MCPData instance and the index of the repetition
+     * @return this instance changed according to changer with param amount-1
+     */
+    public MCPData repeatPrevious(int amount, BiConsumer<MCPData, Integer> changer) {
+        var newPrevious = new ArrayList<MCPData>();
+        previousData.add(this);
+        for (int i = 0; i < amount; i++) {
+            for (var d : previousData) {
+                changer.accept(d, i);
+                newPrevious.add(new MCPData(d));
+            }
+        }
+        var last = newPrevious.remove(newPrevious.size() - 1);
+        last.previousData = newPrevious;
+        return last;
+    }
+
+    /**
+     * retrieves the element in previousData at index so it can be configured
+     * <p>
+     * sometimes it's easier to setup data with repeat method and then
+     * change it after the fact.
+     *
+     * @param index the index into previousData
+     * @return
+     */
+    public MCPData prevAtIndex(int index) {
+        if (index == previousData.size()) return this;
+        return previousData.get(index);
+    }
+
+    @Override
+    public String toString() {
+        return "MCPData {" + StringUtil.toHexString(getCurrData()) + "}";
     }
 
 }
