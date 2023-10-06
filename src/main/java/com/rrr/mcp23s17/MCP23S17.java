@@ -1380,8 +1380,7 @@ public final class MCP23S17 {
         var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
                 .id("CS" + 2)
                 .name("dummy chip select")
-                .address(2)
-                .provider("pigpio-digital-output");
+                .address(2);
 
         var chipSelect = pi4j.create(chipSelectConfig);
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
