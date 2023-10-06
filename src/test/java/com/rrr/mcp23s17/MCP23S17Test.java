@@ -139,8 +139,8 @@ class MCP23S17Test {
         assertArrayEquals(MCPData.builder().write().toIOCON().writeData(0, 1, 0, 0, 0, 0, 0, 0).build(), setupBuffer);
         verify(mockListeners.remove(4)).onInterrupt(true, MCP23S17.Pin.PIN4);
         verify(mockListeners.remove(11)).onInterrupt(true, MCP23S17.Pin.PIN12);
-        for(var lstnr : mockListeners){
-            verify(lstnr,never()).onInterrupt(anyBoolean(),any());
+        for (var lstnr : mockListeners) {
+            verify(lstnr, never()).onInterrupt(anyBoolean(), any());
         }
     }
 
@@ -156,6 +156,36 @@ class MCP23S17Test {
 
     @Test
     void newWithInterrupts() {
+        //given
+        var cut = MCP23S17.newWithInterrupts(pi4j, SpiBus.BUS_0, chipSelect, interruptA, interruptB);
+        var mockSpi = (MockSpi) cut.getSpi();
+        var pins = setAllPinsToInput(cut);
+        var mockListeners = putMockListenersOnAllPins(pins);
+        var pinsToInterrupt = MCPData.builder()
+                .read().toINTFA().response(0, 0, 0, 1, 0, 0, 0, 0)
+                .next().toINTCAPA()
+                .next().toINTFB()
+                .next().toINTCAPB().build();
+        var setupBuffer = mockSpi.readEntireMockBuffer();
+        //when
+        mockSpi.write(pinsToInterrupt);
+        interruptA.mockState(DigitalState.LOW);
+        interruptA.mockState(DigitalState.HIGH);
+        interruptB.mockState(DigitalState.LOW);
+        interruptB.mockState(DigitalState.HIGH);
+        var readData = mockSpi.readEntireMockBuffer();
+        //then
+        assertArrayEquals(MCPData.builder()
+                .read().toINTFA()
+                .next().toINTCAPA()
+                .next().toINTFB()
+                .next().toINTCAPB().build(), readData);
+        assertArrayEquals(new byte[0], setupBuffer);
+        verify(mockListeners.remove(4)).onInterrupt(true, MCP23S17.Pin.PIN4);
+        verify(mockListeners.remove(11)).onInterrupt(true, MCP23S17.Pin.PIN12);
+        for (var lstnr : mockListeners) {
+            verify(lstnr, never()).onInterrupt(anyBoolean(), any());
+        }
     }
 
     @Test
