@@ -33,7 +33,7 @@ jobs:
       with:
         workflow: upload.yml
         name: pi4j-mock-plugin
-        path: /home/runner/.m2/repository
+        path: /home/runner/.m2/repository/com
     - name: Build with Gradle
       uses: gradle/gradle-build-action@v2.9.0
       with:
