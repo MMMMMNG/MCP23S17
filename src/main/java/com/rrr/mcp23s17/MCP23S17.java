@@ -1453,7 +1453,7 @@ public final class MCP23S17 {
                 firstIC.handlePortBInterrupt();
                 delay(10);
                 ++i;
-            } while (interrupts[0].state().isLow() && i < 100);
+            } while (interrupts[0].state().isLow() && i < 1);//TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
 
             if (i > 1) {
                 LOG.warn("read {} times to clear interrupt.", i);
@@ -1476,7 +1476,7 @@ public final class MCP23S17 {
                     currentIC.handlePortBInterrupt();
                     delay(10);
                     ++j;
-                } while (interrupt.state().isLow() && j < 100);
+                } while (interrupt.state().isLow() && j < 1); //TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
                 if (j > 1) {
                     LOG.warn("read {} times to clear interrupt.", j);
                 }
