@@ -1,0 +1,10 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Thu Oct 05 00:59:22 CEST 2023
+pi4j-parent-2.3.0-SNAPSHOT-license.txt>=
+pi4j-parent-2.3.0-20230713.162940-3-license.txt>oss-snapshots-repo=
+pi4j-parent-2.3.0-SNAPSHOT-readme.md>=
+pi4j-parent-2.3.0-20230713.162940-3-readme.md>oss-snapshots-repo=
+pi4j-parent-2.3.0-SNAPSHOT-notice.txt>=
+pi4j-parent-2.3.0-20230713.162940-3-notice.txt>oss-snapshots-repo=
+pi4j-parent-2.3.0-20230713.162940-3.pom>oss-snapshots-repo=
+pi4j-parent-2.3.0-SNAPSHOT.pom>=

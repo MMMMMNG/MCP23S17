@@ -3,7 +3,7 @@
   <groupId>com.pi4j</groupId>
   <artifactId>pi4j-plugin-mock</artifactId>
   <versioning>
-    <lastUpdated>20231005195458</lastUpdated>
+    <lastUpdated>20231006183242</lastUpdated>
     <snapshot>
       <localCopy>true</localCopy>
     </snapshot>
@@ -12,23 +12,23 @@
         <classifier>javadoc</classifier>
         <extension>jar</extension>
         <value>2.3.0-SNAPSHOT</value>
-        <updated>20231005195458</updated>
+        <updated>20231006183242</updated>
       </snapshotVersion>
       <snapshotVersion>
         <classifier>sources</classifier>
         <extension>jar</extension>
         <value>2.3.0-SNAPSHOT</value>
-        <updated>20231005195458</updated>
+        <updated>20231006183242</updated>
       </snapshotVersion>
       <snapshotVersion>
         <extension>jar</extension>
         <value>2.3.0-SNAPSHOT</value>
-        <updated>20231005195458</updated>
+        <updated>20231006183242</updated>
       </snapshotVersion>
       <snapshotVersion>
         <extension>pom</extension>
         <value>2.3.0-SNAPSHOT</value>
-        <updated>20231005195458</updated>
+        <updated>20231006183242</updated>
       </snapshotVersion>
     </snapshotVersions>
   </versioning>

@@ -1,0 +1,22 @@
+   =========================================================================
+   Pi4J :: Java library for Raspberry Pi
+   =========================================================================
+
+   This product includes software developed at:
+   The Pi4J Project (https://pi4j.com/).
+
+   This product was originally authored by: Robert Savage
+
+   This software is licensed under the Apache License, Version 2.0.
+   More information about licensing terms can be found at:
+     https://pi4j.com/license.html
+
+   Additional information about this project and its authors can be found at:
+   - https://pi4j.com/
+   - http://www.raspicentral.com
+   - http://www.savagehomeautomation.com
+
+   =========================================================================
+   Subject to the terms of the software license, this NOTICE file must be
+   included in any Derivative Works that You distribute as a readable copy.
+   (Section 4d)
