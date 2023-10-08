@@ -28,14 +28,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-class MCP23S17Test {
+class MCP23S17Test extends Pi4jSetupBase{
 
-    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17Test.class);
 
-    private Context pi4j;
-    private DigitalOutput chipSelect;
-    private MockDigitalInput interruptA;
-    private MockDigitalInput interruptB;
 
     static Stream<Arguments> sourceMultipleNewOnSameBus() {
         return Stream.iterate(0, i -> i + 1).takeWhile(i -> i < 128).map(i -> Arguments.of(i));
@@ -43,27 +38,6 @@ class MCP23S17Test {
 
     static Stream<Arguments> sourceMultipleNewOnSameBusWithTiedInterrupts() {
         return sourceMultipleNewOnSameBus();
-    }
-
-    @BeforeEach
-    void createMockContext() {
-        pi4j = Pi4J.newContextBuilder()
-                .add(MockSpiProvider.newInstance(),
-                        MockDigitalOutputProvider.newInstance(),
-                        MockDigitalInputProvider.newInstance())
-                .build();
-        chipSelect = DigitalOutputBuilder.newInstance(pi4j).address(20).build();
-        var DIconfig = DigitalInputConfig.newBuilder(pi4j).address(21);
-        interruptA = (MockDigitalInput) pi4j.create(DIconfig.build());
-        interruptB = (MockDigitalInput) pi4j.create(DIconfig.address(22).build());
-        interruptA.mockState(DigitalState.HIGH);
-        interruptB.mockState(DigitalState.HIGH);
-
-    }
-
-    @AfterEach
-    void shutdownContext() {
-        pi4j.shutdown();
     }
 
     private List<MCP23S17.PinView> setAllPinsToInput(MCP23S17 chip) {
