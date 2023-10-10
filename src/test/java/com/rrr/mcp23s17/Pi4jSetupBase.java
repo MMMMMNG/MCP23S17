@@ -38,6 +38,11 @@ public class Pi4jSetupBase {
 
     }
 
+    void mockLow(MockDigitalInput mi) {
+        mi.mockState(DigitalState.LOW);
+        mi.mockState(DigitalState.HIGH);
+    }
+
     @AfterEach
     void shutdownContext() {
         pi4j.shutdown();
