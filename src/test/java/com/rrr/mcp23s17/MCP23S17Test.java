@@ -1,23 +1,16 @@
 package com.rrr.mcp23s17;
 
-import com.pi4j.Pi4J;
-import com.pi4j.context.Context;
-import com.pi4j.io.gpio.digital.*;
+import com.pi4j.io.gpio.digital.DigitalInput;
+import com.pi4j.io.gpio.digital.DigitalInputConfig;
+import com.pi4j.io.gpio.digital.DigitalState;
 import com.pi4j.io.spi.SpiBus;
 import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalInput;
-import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalInputProvider;
-import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalOutputProvider;
 import com.pi4j.plugin.mock.provider.spi.MockSpi;
-import com.pi4j.plugin.mock.provider.spi.MockSpiProvider;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
