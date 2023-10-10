@@ -1,14 +1,15 @@
 package com.rrr.mcp23s17;
 
+import com.pi4j.io.gpio.digital.DigitalState;
 import com.pi4j.io.spi.SpiBus;
+import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalInput;
 import com.pi4j.plugin.mock.provider.spi.MockSpi;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -17,6 +18,9 @@ import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.*;
 
 public class PinViewTest extends Pi4jSetupBase {
 
@@ -112,6 +116,47 @@ public class PinViewTest extends Pi4jSetupBase {
         assertArrayEquals(expUninvert, mockSpi.readEntireMockBuffer());
     }
 
+    @Test
+    void testGetFromRead() throws IOException {
+        //given
+        final MCP23S17.Pin pin = MCP23S17.Pin.PIN6;
+        var preparedData = MCPData.builder()
+                .read().respSetBit(pin.getPinNumber()).next().read().build();
+        var expectedData = MCPData.builder()
+                .read().toGPIOA()
+                .next().toGPIOB().build();
+        mockSpi.write(preparedData);
+        //when - then
+        assertTrue(cuts.get(pin.getPinNumber()).getFromRead());
+        assertArrayEquals(mockSpi.readEntireMockBuffer(), expectedData);
+    }
+
+    @Test
+    @Disabled //can't instantiate more than one spi buses before refactoring
+    void testRemoveListener(){
+        //given
+        final MCP23S17.Pin pin = MCP23S17.Pin.PIN4;
+        var interruptChip = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, chipSelect, interruptA);
+        var cut = interruptChip.getPinView(pin);
+        var mockSpi = (MockSpi) interruptChip.getSpi();
+        var mockListener = mock(MCP23S17.InterruptListener.class);
+        cut.addListener(mockListener);
+        mockSpi.readEntireMockBuffer();
+        var data = MCPData.builder()
+                .read().toINTFA().respSetBit(pin.getPinNumber())
+                .next().toINTCAPA().build();
+        mockSpi.write(data);
+        mockLow(interruptA);
+        verify(mockListener).onInterrupt(true, pin);
+        //when
+        interruptChip.removeGlobalListener(mockListener);
+        mockSpi.readEntireMockBuffer();
+        mockSpi.write(data);
+        mockLow(interruptA);
+        //then
+        verify(mockListener,times(1)).onInterrupt(anyBoolean(),any());
+    }
+
     @BeforeEach
     void setupChip() {
         chip = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0, chipSelect);
@@ -127,6 +172,4 @@ public class PinViewTest extends Pi4jSetupBase {
     void clearCuts() {
         cuts.clear();
     }
-
-
 }
