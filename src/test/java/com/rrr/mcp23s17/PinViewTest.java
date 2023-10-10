@@ -24,6 +24,17 @@ public class PinViewTest extends Pi4jSetupBase {
     private MCP23S17 chip;
     private MockSpi mockSpi;
 
+    static Arguments funcToArg(Function<MCP23S17.PinView, Boolean> checker,
+                               Consumer<MCP23S17.PinView> setter,
+                               Consumer<MCP23S17.PinView> resetter,
+                               Consumer<MCP23S17> writeA,
+                               Consumer<MCP23S17> writeB,
+                               UnaryOperator<MCPData> dataPortA,
+                               UnaryOperator<MCPData> dataPortB,
+                               boolean dataInverted) {
+        return Arguments.of(checker, setter, resetter, writeA, writeB, dataPortA, dataPortB, dataInverted);
+    }
+
     static Stream<Arguments> sourceStandardMethods() {
         return Stream.of(
                 funcToArg(pv -> {
@@ -60,17 +71,6 @@ public class PinViewTest extends Pi4jSetupBase {
                         MCP23S17::writeGPPUA, MCP23S17::writeGPPUB,
                         MCPData::toGPPUA, MCPData::toGPPUB, false)
         );
-    }
-
-    static Arguments funcToArg(Function<MCP23S17.PinView, Boolean> checker,
-                               Consumer<MCP23S17.PinView> setter,
-                               Consumer<MCP23S17.PinView> resetter,
-                               Consumer<MCP23S17> writeA,
-                               Consumer<MCP23S17> writeB,
-                               UnaryOperator<MCPData> dataPortA,
-                               UnaryOperator<MCPData> dataPortB,
-                               boolean dataInverted) {
-        return Arguments.of(checker, setter, resetter, writeA, writeB, dataPortA, dataPortB, dataInverted);
     }
 
     @ParameterizedTest
