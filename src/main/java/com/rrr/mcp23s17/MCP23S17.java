@@ -1,9 +1,7 @@
 package com.rrr.mcp23s17;
 
-import com.pi4j.context.Context;
 import com.pi4j.io.gpio.digital.DigitalInput;
-import com.pi4j.io.gpio.digital.DigitalOutput;
-import com.pi4j.io.spi.*;
+import com.pi4j.io.spi.Spi;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,9 +46,9 @@ import java.util.*;
 //       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
 public final class MCP23S17 {
 
-    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
     // todo: this should be settable by the user
     public static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
+    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
     // Register addresses for IOCON.BANK = 0
     private static final byte ADDR_IODIRA = 0x00;
     private static final byte ADDR_IODIRB = 0x01;
@@ -151,11 +149,7 @@ public final class MCP23S17 {
      * @param readGPIO       whether to read from the GPIO registers or the INTCAP registers on interrupt.
      * @throws NullPointerException if the given chip select output is {@code null}.
      */
-    private MCP23S17(Context pi4j,
-                     Spi bus,
-                     DigitalInput portAInterrupt,
-                     DigitalInput portBInterrupt,
-                     boolean readGPIO) {
+    private MCP23S17(Spi bus, DigitalInput portAInterrupt, DigitalInput portBInterrupt, boolean readGPIO) {
         this.readGPIORegisterOnInterrupt = readGPIO;
         this.spi = bus;
         this.portAInterrupt = portAInterrupt;
@@ -173,15 +167,8 @@ public final class MCP23S17 {
      *                       or {@code null}.
      * @throws NullPointerException if the given chip select output is {@code null}.
      */
-    private MCP23S17(Context pi4j,
-                     Spi bus,
-                     DigitalInput portAInterrupt,
-                     DigitalInput portBInterrupt) {
-        this(pi4j,
-                bus,
-                portAInterrupt,
-                portBInterrupt,
-                false);
+    private MCP23S17(Spi bus, DigitalInput portAInterrupt, DigitalInput portBInterrupt) {
+        this(bus, portAInterrupt, portBInterrupt, false);
     }
 
     /**
@@ -202,8 +189,7 @@ public final class MCP23S17 {
                      int hardWareAddress,
                      DigitalInput portAInterrupt,
                      DigitalInput portBInterrupt,
-                     boolean readGPIO)
-            throws IOException {
+                     boolean readGPIO) throws IOException {
         this.readGPIORegisterOnInterrupt = readGPIO;
         this.spi = other.spi;
         this.portAInterrupt = portAInterrupt;
@@ -223,18 +209,12 @@ public final class MCP23S17 {
     /**
      * Instantiate a new {@code MCP23S17} object with no interrupts.
      *
-     * @param bus        the chip is wired to this interface (SPI).
-     * @param pi4j       the pi4j context
+     * @param bus the chip is wired to this interface (SPI).
      * @return a new {@code MCP23S17} object with no interrupts.
      * @throws NullPointerException if the given chip select output is {@code null}.
      */
-    public static MCP23S17 newWithoutInterrupts(Context pi4j,
-                                                Spi bus) {
-        return new MCP23S17(
-                pi4j,
-                bus,
-                null,
-                null
+    public static MCP23S17 newWithoutInterrupts(Spi bus) {
+        return new MCP23S17(bus, null, null
         );
     }
 
@@ -242,16 +222,13 @@ public final class MCP23S17 {
      * Instantiate a number of {@code MCP23S17} objects on the same bus with consecutive adresses.
      *
      * @param bus    the chip is wired to this interface (SPI).
-     * @param pi4j   the {@link Context} object
      * @param amount the amount of chips on the bus. must be between 1 and 8
      * @return an {@link ArrayList} of {@code MCP23S17} objects with no interrupts.
      * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
      * @throws IllegalArgumentException if there are too few/many chips on the bus ({@code amount} not in range 1-8)
      * @throws NullPointerException     if the given chip select output is {@code null}.
      */
-    public static ArrayList<MCP23S17> multipleNewOnSameBus(Context pi4j,
-                                                           Spi bus,
-                                                           int amount)
+    public static ArrayList<MCP23S17> multipleNewOnSameBus(Spi bus, int amount)
             throws IOException, IllegalArgumentException {
         if (amount > 8 || amount < 1) {
             throw new IllegalArgumentException(
@@ -259,7 +236,7 @@ public final class MCP23S17 {
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(pi4j, bus, null, null);
+        var firstIC = new MCP23S17(bus, null, null);
         integratedCircuitList.add(firstIC);
 
         for (int i = 1; i < amount; ++i) {
@@ -277,8 +254,7 @@ public final class MCP23S17 {
      * Instantiate multiple new {@code MCP23S17} objects on the same SPI-bus with their hardware address pins enabled
      * and with their port A and port B interrupt lines "tied" together.
      *
-     * @param pi4j       the pi4j {@link  Context} object
-     * @param bus        the {@link  SpiBus} with which to communicatee with the chips
+     * @param bus        the chips are wired to this interface (SPI).
      * @param interrupts an array of {@link DigitalInput}s to listen for interrupts from the chips
      * @param amount     the amount of ICs on the bus
      * @param readGPIO   true if on interrupt the GPIO registers should be read instead of the INTCAP registers
@@ -288,8 +264,7 @@ public final class MCP23S17 {
      * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
      * @throws NullPointerException     if the {@code interrupts} array contains null.
      */
-    public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Context pi4j,
-                                                                             Spi bus,
+    public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Spi bus,
                                                                              DigitalInput[] interrupts,
                                                                              int amount,
                                                                              boolean readGPIO)
@@ -306,8 +281,7 @@ public final class MCP23S17 {
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(pi4j,
-                bus,
+        var firstIC = new MCP23S17(bus,
                 Objects.requireNonNull(interrupts[0], "interrupts must be non-null"),
                 interrupts[0],
                 readGPIO);
@@ -369,17 +343,14 @@ public final class MCP23S17 {
     /**
      * Instantiate a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
      *
-     * @param bus        the chip is wired to this interface (SPI).
-     * @param interrupt  the interrupt {@linkplain DigitalInput input pin}.
-     * @param pi4j       the pi4j context
+     * @param bus       the chip is wired to this interface (SPI).
+     * @param interrupt the interrupt {@linkplain DigitalInput input pin}.
      * @return a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
      * @throws NullPointerException if the given chip select output or tied interrupt input is {@code null}.
      */
-    public static MCP23S17 newWithTiedInterrupts(Context pi4j,
-                                                 Spi bus,
+    public static MCP23S17 newWithTiedInterrupts(Spi bus,
                                                  DigitalInput interrupt) {
         MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
                 bus,
                 Objects.requireNonNull(interrupt, "interrupt must be non-null"),
                 interrupt
@@ -399,16 +370,13 @@ public final class MCP23S17 {
      * @param bus            the chip is wired to this interface (SPI).
      * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
      * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
-     * @param pi4j           the pi4j context
      * @return a new {@code MCP23S17} object with individual port A and port B interrupt lines.
      * @throws NullPointerException if the given chip select output or either of the interrupt inputs is {@code null}.
      */
-    public static MCP23S17 newWithInterrupts(Context pi4j,
-                                             Spi bus,
+    public static MCP23S17 newWithInterrupts(Spi bus,
                                              DigitalInput portAInterrupt,
                                              DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
                 bus,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
                 Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
@@ -423,15 +391,12 @@ public final class MCP23S17 {
      *
      * @param bus            the chip is wired to this interface (SPI).
      * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
-     * @param pi4j           the pi4j context
      * @return a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
      * @throws NullPointerException if the given chip select output or the port A interrupt inputs is {@code null}.
      */
-    public static MCP23S17 newWithPortAInterrupts(Context pi4j,
-                                                  Spi bus,
+    public static MCP23S17 newWithPortAInterrupts(Spi bus,
                                                   DigitalInput portAInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
                 bus,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
                 null
@@ -445,15 +410,12 @@ public final class MCP23S17 {
      *
      * @param bus            the chip is wired to this interface (SPI).
      * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
-     * @param pi4j           the pi4j context
      * @return a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
      * @throws NullPointerException if the given chip select output or the port B interrupt inputs is {@code null}.
      */
-    public static MCP23S17 newWithPortBInterrupts(Context pi4j,
-                                                  Spi bus,
+    public static MCP23S17 newWithPortBInterrupts(Spi bus,
                                                   DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
                 bus,
                 null,
                 Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")

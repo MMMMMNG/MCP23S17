@@ -132,7 +132,7 @@ public class PinViewTest extends Pi4jSetupBase {
     void testRemoveListener() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN4;
-        var interruptChip = MCP23S17.newWithTiedInterrupts(pi4j, spi, interruptA);
+        var interruptChip = MCP23S17.newWithTiedInterrupts(spi, interruptA);
         var cut = interruptChip.getPinView(pin);
         var mockSpi = (MockSpi) interruptChip.getSpi();
         var mockListener = mock(MCP23S17.InterruptListener.class);
@@ -156,7 +156,7 @@ public class PinViewTest extends Pi4jSetupBase {
 
     @BeforeEach
     void setupChip() {
-        chip = MCP23S17.newWithoutInterrupts(pi4j, spi);
+        chip = MCP23S17.newWithoutInterrupts(spi);
         var it = chip.getPinViewIterator();
         while (it.hasNext()) {
             var pw = it.next();
