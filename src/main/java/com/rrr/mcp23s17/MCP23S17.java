@@ -79,6 +79,8 @@ public final class MCP23S17 {
     // OPCODES--these are written before a register address in the read and write processes.
     //NOTE: If ICs with different Hardware addresses get added, those addresses are stored in those opcodes.
     //that's why they're not static.
+    private static final byte WRITE_OPCODE = 0x40;
+    private static final byte READ_OPCODE = 0x41;
     /**
      * The SPI communication interface.
      */
@@ -111,9 +113,10 @@ public final class MCP23S17 {
      * however.
      */
     private final Object byteWriteLock = new Object();
-    //todo: probably best to store the HW addresses in a separate byte and or them in the write function
-    private byte writeOpcode = 0x40;
-    private byte readOpcode = 0x41;
+
+    //these bytes are the WRITE_OPCODE and READ_OPCODE bitwise ORed with the HW address
+    private final byte writeByte;
+    private final byte readByte;
     // The bytes representing the value of the chip's various registers.
     // They are initialized to the corresponding registers' initial value, as given in the MCP23S17 datasheet.
     // Note that these bytes do not necessarily represent the actual value in the corresponding register (i.e. they may
@@ -155,7 +158,7 @@ public final class MCP23S17 {
                      DigitalInput portBInterrupt,
                      boolean readGPIO) {
         this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = spi;
+        this.spi = Objects.requireNonNull(spi, "Provided SPI is null. Can't have that.");
         this.portAInterrupt = portAInterrupt;
         this.portBInterrupt = portBInterrupt;
         //check whether the Address is in the correct range
@@ -166,8 +169,8 @@ public final class MCP23S17 {
         //the hardWareAddress is the three bits before the Read/Write bit:
         //0b0100xxx0 to write to address xxx
         //0b0100xxx1 to read from address xxx
-        this.readOpcode |= (((byte) hardWareAddress) << 1);
-        this.writeOpcode |= (((byte) hardWareAddress) << 1);
+        this.readByte = (byte) (READ_OPCODE | (hardWareAddress << 1));
+        this.writeByte = (byte) (WRITE_OPCODE | (hardWareAddress << 1));
     }
 
     /**
@@ -537,7 +540,7 @@ public final class MCP23S17 {
         // Without testing it is unclear whether the synchronization here is necessary--the documentation on write
         // is poor.
         synchronized (spi) {
-            spi.write(writeOpcode, registerAddress, value);
+            spi.write(writeByte, registerAddress, value);
         }
     }
 
@@ -693,7 +696,7 @@ public final class MCP23S17 {
     private byte read(byte registerAddress) throws IOException {
         byte[] data = new byte[3];
         // The 0x00 byte is just arbitrary filler.
-        byte[] send = {readOpcode, registerAddress, (byte) 0x00};
+        byte[] send = {readByte, registerAddress, (byte) 0x00};
         synchronized (spi) {
             int res;
             res = spi.transfer(send, data);
