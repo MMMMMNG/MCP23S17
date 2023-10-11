@@ -38,7 +38,7 @@ import java.util.*;
  * information.
  * </p>
  *
- * @author Robert Russell, updated to pi4j V2 by MNG
+ * @author Robert Russell, updated to pi4j-v2 by MNG
  */
 // TODO: that writeXXX must be called after a PinView setter method is extremely awkward. The same support for batch
 //       writes might be facilitated (in a future version) by some locking/synchronization mechanism where a lock is

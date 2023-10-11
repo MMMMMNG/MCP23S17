@@ -129,8 +129,6 @@ public class PinViewTest extends Pi4jSetupBase {
     }
 
     @Test
-    @Disabled
-        //can't instantiate more than one spi buses before refactoring
     void testRemoveListener() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN4;
@@ -147,7 +145,8 @@ public class PinViewTest extends Pi4jSetupBase {
         mockLow(interruptA);
         verify(mockListener).onInterrupt(true, pin);
         //when
-        interruptChip.removeGlobalListener(mockListener);
+        cut.removeListener(mockListener);
+
         mockSpi.readEntireMockBuffer();
         mockSpi.write(data);
         mockLow(interruptA);
