@@ -137,64 +137,30 @@ public final class MCP23S17 {
     private volatile byte GPIOB = (byte) 0b00000000;
 
     /**
-     * This is the first out of two private constructors.--the static factory methods must be used for object creation.
-     *
-     * @param bus            the chip is wired to this interface (SPI).
-     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
-     *                       or {@code null}.
-     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
-     *                       or {@code null}.
-     * @param readGPIO       whether to read from the GPIO registers or the INTCAP registers on interrupt.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    private MCP23S17(Spi bus, DigitalInput portAInterrupt, DigitalInput portBInterrupt, boolean readGPIO) {
-        this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = bus;
-        this.portAInterrupt = portAInterrupt;
-        this.portBInterrupt = portBInterrupt;
-    }
-
-    /**
-     * This is the same as the first out of the two private
-     * constructors, it is just a helper to emulate default parameters via overloading.
-     *
-     * @param bus            the chip is wired to this interface (SPI).
-     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
-     *                       or {@code null}.
-     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
-     *                       or {@code null}.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    private MCP23S17(Spi bus, DigitalInput portAInterrupt, DigitalInput portBInterrupt) {
-        this(bus, portAInterrupt, portBInterrupt, false);
-    }
-
-    /**
-     * This is the second out of two private constructors.
-     * It is used for adding more ICs to the same SPI-Bus. See {@code MCP23S17.multipleNewOnSameBus()}.
+     * This is the only private constructor. --the static factory methods must be used for object creation.
+     * <p>
      * Note that the Address pins are disabled by default. The factory method enables them.
-     * --the static factory methods must be used for object creation
      *
-     * @param other           The MCP23S17 IC with its Address Pins all tied to 0, thus with address 0.
+     * @param spi             the chip is wired to this interface (SPI).
      * @param hardWareAddress The Hardware Adress of this very MCP23S17 IC.
-     * @param portAInterrupt  the pin where INTA is connected
-     * @param portBInterrupt  the pin where INTB is connected
-     * @param readGPIO        whether to read from GPIO registers instead of INTCAP registers on interrupt.
-     * @throws IOException          if the instantiation of the {@link Spi Spi} object fails.
-     * @throws NullPointerException if the given chip select output is {@code null}.
+     * @param portAInterrupt  the pin where INTA of this chip is connected
+     * @param portBInterrupt  the pin where INTB of this chip is connected
+     * @param readGPIO        whether to read from GPIO registers in addition to INTCAP registers on interrupt.
+     * @throws NullPointerException     if the given chip select output is {@code null}.
+     * @throws IllegalArgumentException if the hardware address is outside the range 0-7
      */
-    private MCP23S17(MCP23S17 other,
+    private MCP23S17(Spi spi,
                      int hardWareAddress,
                      DigitalInput portAInterrupt,
                      DigitalInput portBInterrupt,
-                     boolean readGPIO) throws IOException {
+                     boolean readGPIO) {
         this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = other.spi;
+        this.spi = spi;
         this.portAInterrupt = portAInterrupt;
         this.portBInterrupt = portBInterrupt;
         //check whether the Address is in the correct range
         if (hardWareAddress > 7 || hardWareAddress < 0) {
-            throw new IOException("hardWareAddress [" + hardWareAddress + "] must be between 0 and 7,"
+            throw new IllegalArgumentException("hardWareAddress [" + hardWareAddress + "] must be between 0 and 7,"
                     + " as there are only 3 physical address pins on the MCP23S12 IC.");
         }
         //the hardWareAddress is the three bits before the Read/Write bit:
@@ -212,8 +178,7 @@ public final class MCP23S17 {
      * @throws NullPointerException if the given chip select output is {@code null}.
      */
     public static MCP23S17 newWithoutInterrupts(Spi bus) {
-        return new MCP23S17(bus, null, null
-        );
+        return new MCP23S17(bus, 0, null, null, false);
     }
 
     /**
@@ -222,28 +187,23 @@ public final class MCP23S17 {
      * @param bus    the chip is wired to this interface (SPI).
      * @param amount the amount of chips on the bus. must be between 1 and 8
      * @return an {@link ArrayList} of {@code MCP23S17} objects with no interrupts.
-     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
      * @throws IllegalArgumentException if there are too few/many chips on the bus ({@code amount} not in range 1-8)
      * @throws NullPointerException     if the given chip select output is {@code null}.
      */
-    public static ArrayList<MCP23S17> multipleNewOnSameBus(Spi bus, int amount)
-            throws IOException, IllegalArgumentException {
+    public static ArrayList<MCP23S17> multipleNewOnSameBus(Spi bus, int amount) {
         if (amount > 8 || amount < 1) {
             throw new IllegalArgumentException(
                     "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(bus, null, null);
-        integratedCircuitList.add(firstIC);
-
-        for (int i = 1; i < amount; ++i) {
-            integratedCircuitList.add(new MCP23S17(firstIC, i, null, null, false));
+        for (int i = 0; i < amount; ++i) {
+            integratedCircuitList.add(new MCP23S17(bus, i, null, null, false));
         }
 
         //need to enable the hardware adress pins by sending the appropriate address write command.
         //this enables every chip assuming they are connected to the same SPI bus and Chip select
-        firstIC.write(ADDR_IOCON, (byte) 0b00001000);
+        integratedCircuitList.get(0).write(ADDR_IOCON, (byte) 0b00001000);
 
         return integratedCircuitList;
     }
@@ -259,14 +219,12 @@ public final class MCP23S17 {
      * @return all the newly instantiated ICs
      * @throws IllegalArgumentException if the amount isn't in the range 1-8 or
      *                                  {@code interrupts.length} is smaller than amount
-     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
      * @throws NullPointerException     if the {@code interrupts} array contains null.
      */
     public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Spi bus,
                                                                              DigitalInput[] interrupts,
                                                                              int amount,
-                                                                             boolean readGPIO)
-            throws IllegalArgumentException, IOException {
+                                                                             boolean readGPIO) {
 
         if (amount > 8 || amount < 1) {
             throw new IllegalArgumentException(
@@ -279,27 +237,10 @@ public final class MCP23S17 {
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(bus,
-                Objects.requireNonNull(interrupts[0], "interrupts must be non-null"),
-                interrupts[0],
-                readGPIO);
-        integratedCircuitList.add(firstIC);
-        attachInterruptOnLow(interrupts[0], () -> {
-            int i = 0;
-            do {
-                firstIC.handlePortAInterrupt();
-                firstIC.handlePortBInterrupt();
-                delay(10);
-                ++i;
-            } while (interrupts[0].state().isLow() && i < 1);//TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
 
-            if (i > 1) {
-                LOG.warn("read {} times to clear interrupt.", i);
-            }
-        });
-
-        for (int i = 1; i < amount; ++i) {
-            var currentIC = new MCP23S17(firstIC,
+        for (int i = 0; i < amount; ++i) {
+            var currentIC = new MCP23S17(
+                    bus,
                     i,
                     Objects.requireNonNull(interrupts[i], "interrupts must be non-null"),
                     interrupts[i],
@@ -314,7 +255,7 @@ public final class MCP23S17 {
                     currentIC.handlePortBInterrupt();
                     delay(10);
                     ++j;
-                } while (interrupt.state().isLow() && j < 1); //TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
+                } while (interrupt.state().isLow() && j < 1); //TODO: this is a failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
                 if (j > 1) {
                     LOG.warn("read {} times to clear interrupt.", j);
                 }
@@ -328,7 +269,7 @@ public final class MCP23S17 {
         //need to enable the hardware address pins by sending the appropriate address write command.
         //this enables every chip assuming they are connected to the same SPI bus and Chip select
         mirrorAndHAEN |= 0b00001000;
-        firstIC.write(ADDR_IOCON, mirrorAndHAEN);
+        integratedCircuitList.get(0).write(ADDR_IOCON, mirrorAndHAEN);
         //last chip somehow doesn't tie its interrupt together. Maybe capacitance because it is
         //the last one on the bus? makes little sense.
         //anyway, writing to the last one specifically and telling it to tie its interrupts
@@ -350,9 +291,10 @@ public final class MCP23S17 {
                                                  DigitalInput interrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
+                0,
                 Objects.requireNonNull(interrupt, "interrupt must be non-null"),
-                interrupt
-        );
+                interrupt,
+                false);
         // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
         ioExpander.write(ADDR_IOCON, (byte) 0x40);
         attachInterruptOnLow(interrupt, () -> {
@@ -376,9 +318,10 @@ public final class MCP23S17 {
                                              DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
+                0,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
-        );
+                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null"),
+                false);
         attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
         attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
         return ioExpander;
@@ -396,9 +339,10 @@ public final class MCP23S17 {
                                                   DigitalInput portAInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
+                0,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
-                null
-        );
+                null,
+                false);
         attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
         return ioExpander;
     }
@@ -415,9 +359,10 @@ public final class MCP23S17 {
                                                   DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
+                0,
                 null,
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
-        );
+                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null"),
+                false);
         attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
         return ioExpander;
     }
@@ -840,7 +785,7 @@ public final class MCP23S17 {
     }
 
     /**
-     * This is the callback for when port A interrupts occur. Read the INTFA and INTCAPA or GPIOA registers
+     * This is the callback for when port A interrupts occur. Read the INTFA and INTCAPA and maybe GPIOA registers
      * depending on {@code readGPIORegisterOnInterrupt} and alert all the
      * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
      */
@@ -858,7 +803,7 @@ public final class MCP23S17 {
     }
 
     /**
-     * This is the callback for when port B interrupts occur. Read the INTFB and INTCAPB or GPIOB registers
+     * This is the callback for when port B interrupts occur. Read the INTFB and INTCAPB and maybe GPIOB registers
      * depending on {@code readGPIORegisterOnInterrupt} and alert all the
      * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
      */
@@ -1512,5 +1457,4 @@ public final class MCP23S17 {
             }
         }
     }
-
 }
