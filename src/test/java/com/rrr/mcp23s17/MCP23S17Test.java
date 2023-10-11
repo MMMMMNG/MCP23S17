@@ -438,6 +438,33 @@ class MCP23S17Test extends Pi4jSetupBase {
 
     }
 
+    @Test
+    @DisplayName("when the readFromGPIOOnInterrupt flag is set, the class ignores any captured interrupts that changed state too briefly")
+    void testReadFromGPIOOnInterrupt() throws IOException {
+        //given
+        final MCP23S17.Pin pin = MCP23S17.Pin.PIN6;
+        var cut = MCP23S17.multipleNewOnSameBusWithTiedInterrupts(spi, new DigitalInput[]{interruptA}, 1, true).get(0);
+        var mockSpi = (MockSpi) cut.getSpi();
+        var pinView = cut.getPinView(pin);
+        pinView.setAsInput();
+        var mockListener = mock(MCP23S17.InterruptListener.class);
+        pinView.addListener(mockListener);
+        var preparedData = MCPData.builder().read().respSetBit(pin.getPinNumber())
+                .next().next().response(0,0,0,0,0,0,0,0)
+                .next().next().next();
+        mockSpi.readEntireMockBuffer();
+        mockSpi.write(preparedData.build());
+        mockLow(interruptA);
+        //then
+        verify(mockListener, never()).onInterrupt(anyBoolean(), any());
+
+        preparedData.prevAtIndex(2).respSetBit(pin.getPinNumber());
+        mockSpi.readEntireMockBuffer();
+        mockSpi.write(preparedData.build());
+        mockLow(interruptA);
+        verify(mockListener, times(1)).onInterrupt(true, pin);
+    }
+
     private List<MockDigitalInput> getMockInterruptPins(int n) {
         var DIConfig = DigitalInputConfig.newBuilder(pi4j).address(0);
         var pins = new ArrayList<MockDigitalInput>();

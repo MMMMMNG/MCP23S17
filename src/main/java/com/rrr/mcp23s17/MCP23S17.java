@@ -45,8 +45,6 @@ import java.util.*;
 //       changes would simply be forgotten without (as is currently the case) local state potentially becoming
 //       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
 public final class MCP23S17 {
-
-    // todo: this should be settable by the user
     public static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
     private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
     // Register addresses for IOCON.BANK = 0
