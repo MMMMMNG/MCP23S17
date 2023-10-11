@@ -1,6 +1,5 @@
 package com.rrr.mcp23s17;
 
-import com.pi4j.io.spi.SpiBus;
 import com.pi4j.plugin.mock.provider.spi.MockSpi;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -135,7 +134,7 @@ public class PinViewTest extends Pi4jSetupBase {
     void testRemoveListener() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN4;
-        var interruptChip = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, interruptA);
+        var interruptChip = MCP23S17.newWithTiedInterrupts(pi4j, spi, interruptA);
         var cut = interruptChip.getPinView(pin);
         var mockSpi = (MockSpi) interruptChip.getSpi();
         var mockListener = mock(MCP23S17.InterruptListener.class);
@@ -158,7 +157,7 @@ public class PinViewTest extends Pi4jSetupBase {
 
     @BeforeEach
     void setupChip() {
-        chip = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        chip = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var it = chip.getPinViewIterator();
         while (it.hasNext()) {
             var pw = it.next();

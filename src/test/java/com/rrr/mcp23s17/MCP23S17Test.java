@@ -3,7 +3,6 @@ package com.rrr.mcp23s17;
 import com.pi4j.io.gpio.digital.DigitalInput;
 import com.pi4j.io.gpio.digital.DigitalInputConfig;
 import com.pi4j.io.gpio.digital.DigitalState;
-import com.pi4j.io.spi.SpiBus;
 import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalInput;
 import com.pi4j.plugin.mock.provider.spi.MockSpi;
 import org.junit.jupiter.api.DisplayName;
@@ -22,7 +21,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class MCP23S17Test extends Pi4jSetupBase {
-
 
     static Stream<Arguments> sourceMultipleNewOnSameBus() {
         return Stream.iterate(0, i -> i + 1).takeWhile(i -> i < 128).map(i -> Arguments.of(i));
@@ -45,7 +43,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void testIODIRwriting() {
         //given
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var expectedData = MCPData.builder()
@@ -71,7 +69,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void newWithoutInterrupts() {
         //given
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var turnEverySecondPinOn = MCPData.builder().read().response(1, 0, 1, 0, 1, 0, 1, 0).next().build();
@@ -96,7 +94,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void newWithTiedInterrupts() {
         //given
-        var cut = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, interruptA);
+        var cut = MCP23S17.newWithTiedInterrupts(pi4j, spi, interruptA);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var mockListeners = putMockListenersOnAllPins(pins);
@@ -137,7 +135,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void newWithInterrupts() {
         //given
-        var cut = MCP23S17.newWithInterrupts(pi4j, SpiBus.BUS_0, interruptA, interruptB);
+        var cut = MCP23S17.newWithInterrupts(pi4j, spi, interruptA, interruptB);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var mockListeners = putMockListenersOnAllPins(pins);
@@ -169,7 +167,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void newWithPortAInterrupts() {
         //given
-        var cut = MCP23S17.newWithPortAInterrupts(pi4j, SpiBus.BUS_0, interruptA);
+        var cut = MCP23S17.newWithPortAInterrupts(pi4j, spi, interruptA);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var mockListeners = putMockListenersOnAllPins(pins);
@@ -195,7 +193,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void newWithPortBInterrupts() {
         //given
-        var cut = MCP23S17.newWithPortBInterrupts(pi4j, SpiBus.BUS_0, interruptB);
+        var cut = MCP23S17.newWithPortBInterrupts(pi4j, spi, interruptB);
         var mockSpi = (MockSpi) cut.getSpi();
         var pins = setAllPinsToInput(cut);
         var mockListeners = putMockListenersOnAllPins(pins);
@@ -222,7 +220,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @Test
     void getAllPinsAsPulledUpInterruptInput() throws IOException {
         //given
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         var expectedPinSetupData = MCPData.builder()
                 .write().toIODIRA().writeData(1, 1, 1, 1, 1, 1, 1, 1)
@@ -252,7 +250,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void multipleNewOnSameBus(int pinIndex) throws IOException {
         //given
         final int amount = 8;
-        var cuts = MCP23S17.multipleNewOnSameBus(pi4j, SpiBus.BUS_0, amount);
+        var cuts = MCP23S17.multipleNewOnSameBus(pi4j, spi, amount);
         var mockSpi = (MockSpi) cuts.get(0).getSpi();
         var expectedSetupBuffer = MCPData.builder().write().toIOCON().writeData(0, 0, 0, 0, 1, 0, 0, 0).build();
         var setupBuffer = mockSpi.readEntireMockBuffer();
@@ -294,7 +292,7 @@ class MCP23S17Test extends Pi4jSetupBase {
         //given
         final int amount = 8;
         var mockInterrupts = getMockInterruptPins(8);
-        var cuts = MCP23S17.multipleNewOnSameBusWithTiedInterrupts(pi4j, SpiBus.BUS_0, mockInterrupts.toArray(new DigitalInput[0]), amount, false);
+        var cuts = MCP23S17.multipleNewOnSameBusWithTiedInterrupts(pi4j, spi, mockInterrupts.toArray(new DigitalInput[0]), amount, false);
         var mockSpi = (MockSpi) cuts.get(0).getSpi();
         var expectedSetupBuffer = MCPData.builder()
                 .write().toIOCON().writeData(0, 1, 0, 0, 1, 0, 0, 0)
@@ -337,7 +335,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void testGlobalEventListener() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN5;
-        var cut = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, interruptA);
+        var cut = MCP23S17.newWithTiedInterrupts(pi4j, spi, interruptA);
         var mockSpi = (MockSpi) cut.getSpi();
         var mockListener = mock(MCP23S17.InterruptListener.class);
         cut.addGlobalListener(mockListener);
@@ -357,7 +355,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void testGlobalEventListenerRemove() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN5;
-        var cut = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, interruptA);
+        var cut = MCP23S17.newWithTiedInterrupts(pi4j, spi, interruptA);
         var mockSpi = (MockSpi) cut.getSpi();
         var mockListener = mock(MCP23S17.InterruptListener.class);
         cut.addGlobalListener(mockListener);
@@ -381,7 +379,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @DisplayName("global event listener throws when null is supplied called")
     void addGlobalListenerThrows() {
         //given
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         //when then
         assertThrows(NullPointerException.class, () -> cut.addGlobalListener(null));
 
@@ -391,7 +389,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     @DisplayName("global event listener throws when listener is added twice")
     void addGlobalListenerThrowsWhenSameListenerAddedTwice() {
         //given
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockListener = mock(MCP23S17.InterruptListener.class);
         cut.addGlobalListener(mockListener);
         //when - then
@@ -403,7 +401,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void testReadGPINTENA() throws IOException {
         //given
         var readData = MCPData.builder().read().toGPINTENA().response(1, 0, 1, 0, 1, 0, 1, 0).build();
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         mockSpi.write(readData);
         //when - then
@@ -416,7 +414,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void testReadGPINTENB() throws IOException {
         //given
         var readData = MCPData.builder().read().toGPINTENB().response(1, 0, 1, 0, 1, 0, 1, 0).build();
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         mockSpi.write(readData);
         //when - then
@@ -430,7 +428,7 @@ class MCP23S17Test extends Pi4jSetupBase {
     void testReadIOCON() throws IOException {
         //given
         var readData = MCPData.builder().read().toIOCON().response(1, 0, 1, 0, 1, 0, 1, 0).build();
-        var cut = MCP23S17.newWithoutInterrupts(pi4j, SpiBus.BUS_0);
+        var cut = MCP23S17.newWithoutInterrupts(pi4j, spi);
         var mockSpi = (MockSpi) cut.getSpi();
         mockSpi.write(readData);
         //when - then
