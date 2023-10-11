@@ -1,8 +1,6 @@
 package com.rrr.mcp23s17;
 
-import com.pi4j.io.gpio.digital.DigitalState;
 import com.pi4j.io.spi.SpiBus;
-import com.pi4j.plugin.mock.provider.gpio.digital.MockDigitalInput;
 import com.pi4j.plugin.mock.provider.spi.MockSpi;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -132,8 +130,9 @@ public class PinViewTest extends Pi4jSetupBase {
     }
 
     @Test
-    @Disabled //can't instantiate more than one spi buses before refactoring
-    void testRemoveListener(){
+    @Disabled
+        //can't instantiate more than one spi buses before refactoring
+    void testRemoveListener() {
         //given
         final MCP23S17.Pin pin = MCP23S17.Pin.PIN4;
         var interruptChip = MCP23S17.newWithTiedInterrupts(pi4j, SpiBus.BUS_0, chipSelect, interruptA);
@@ -154,7 +153,7 @@ public class PinViewTest extends Pi4jSetupBase {
         mockSpi.write(data);
         mockLow(interruptA);
         //then
-        verify(mockListener,times(1)).onInterrupt(anyBoolean(),any());
+        verify(mockListener, times(1)).onInterrupt(anyBoolean(), any());
     }
 
     @BeforeEach

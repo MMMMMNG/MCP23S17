@@ -1,7 +1,8 @@
 package com.rrr.mcp23s17;
 
 import com.pi4j.context.Context;
-import com.pi4j.io.gpio.digital.*;
+import com.pi4j.io.gpio.digital.DigitalInput;
+import com.pi4j.io.gpio.digital.DigitalOutput;
 import com.pi4j.io.spi.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,986 @@ import java.util.*;
 //       changes would simply be forgotten without (as is currently the case) local state potentially becoming
 //       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
 public final class MCP23S17 {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
+    // todo: this should be settable by the user
+    private static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
+    // Register addresses for IOCON.BANK = 0
+    private static final byte ADDR_IODIRA = 0x00;
+    private static final byte ADDR_IODIRB = 0x01;
+    private static final byte ADDR_IPOLA = 0x02;
+    private static final byte ADDR_IPOLB = 0x03;
+    private static final byte ADDR_GPINTENA = 0x04;
+    private static final byte ADDR_GPINTENB = 0x05;
+    private static final byte ADDR_DEFVALA = 0x06;
+    private static final byte ADDR_DEFVALB = 0x07;
+    private static final byte ADDR_INTCONA = 0x08;
+    private static final byte ADDR_INTCONB = 0x09;
+    private static final byte ADDR_IOCON = 0x0A;
+    private static final byte ADDR_GPPUA = 0x0C;
+    private static final byte ADDR_GPPUB = 0x0D;
+    private static final byte ADDR_INTFA = 0x0E;
+    private static final byte ADDR_INTFB = 0x0F;
+    private static final byte ADDR_INTCAPA = 0x10;
+    private static final byte ADDR_INTCAPB = 0x11;
+    private static final byte ADDR_GPIOA = 0x12;
+    private static final byte ADDR_GPIOB = 0x13;
+    private static final byte ADDR_OLATA = 0x14;
+    private static final byte ADDR_OLATB = 0x15;
+    // These arrays are used for interrupt handling. (Interrupts are port-specific, so having separate arrays for each
+    // port means we can iterate over the pins belonging to either port A or B.)
+    private static final Pin[] PORT_A_PINS =
+            {Pin.PIN0, Pin.PIN1, Pin.PIN2, Pin.PIN3, Pin.PIN4, Pin.PIN5, Pin.PIN6, Pin.PIN7};
+    private static final Pin[] PORT_B_PINS =
+            {Pin.PIN8, Pin.PIN9, Pin.PIN10, Pin.PIN11, Pin.PIN12, Pin.PIN13, Pin.PIN14, Pin.PIN15};
+    /**
+     * The output pin for the chip select line on the MCP23S17 chip.
+     */
+    private final DigitalOutput chipSelect;
+
+    // OPCODES--these are written before a register address in the read and write processes.
+    //NOTE: If ICs with different Hardware addresses get added, those addresses are stored in those opcodes.
+    //that's why they're not static.
+    /**
+     * The SPI communication interface.
+     */
+    private final Spi spi;
+    /**
+     * Stores whether this chip will read the GPIO registers to check for state change on the pins
+     * or the INTCAP registers.
+     */
+    private final boolean readGPIORegisterOnInterrupt;
+    /**
+     * The lazily-instantiated {@link PinView PinView}s. This object is synchronized on in
+     * {@link MCP23S17#getPinView(Pin) getPinView} as {@code PinView}s are accessed in the
+     * {@linkplain MCP23S17#callInterruptListeners(byte, byte, Pin[]) interrupt handling routine} (which is invoked in a
+     * different thread).
+     */
+    private final EnumMap<Pin, PinView> pinViews = new EnumMap<>(Pin.class);
+    /**
+     * The registered global listeners--not pin-specific listeners. This object is synchronized on so that listeners
+     * cannot be added or removed while an interrupt is being processed or vice versa.
+     */
+    private final Collection<InterruptListener> globalListeners = new HashSet<>(0);
+    // These are only referenced so they are not GCed.
+    private final DigitalInput portAInterrupt;
+    private final DigitalInput portBInterrupt;
+    /**
+     * This {@code Object}'s intrinsic lock is acquired whenever one of the above bytes is written to so that two
+     * threads may not write to the same byte at the same time. Ideally we would have one lock per byte because, for
+     * example, a thread writing only to IODIRB need not yield to a thread writing only to IODIRA, but then we would
+     * have fourteen lock objects! Byte writes should be infrequent enough and fast enough for this to not be an issue,
+     * however.
+     */
+    private final Object byteWriteLock = new Object();
+    //todo: probably best to store the HW addresses in a separate byte and or them in the write function
+    private byte writeOpcode = 0x40;
+    private byte readOpcode = 0x41;
+    // The bytes representing the value of the chip's various registers.
+    // They are initialized to the corresponding registers' initial value, as given in the MCP23S17 datasheet.
+    // Note that these bytes do not necessarily represent the actual value in the corresponding register (i.e. they may
+    // be out of sync with the registers).
+    private volatile byte IODIRA = (byte) 0b11111111;
+    private volatile byte IODIRB = (byte) 0b11111111;
+    private volatile byte IPOLA = (byte) 0b00000000;
+    private volatile byte IPOLB = (byte) 0b00000000;
+    private volatile byte GPINTENA = (byte) 0b00000000;
+    private volatile byte GPINTENB = (byte) 0b00000000;
+    private volatile byte DEFVALA = (byte) 0b00000000;
+    private volatile byte DEFVALB = (byte) 0b00000000;
+    private volatile byte INTCONA = (byte) 0b00000000;
+    private volatile byte INTCONB = (byte) 0b00000000;
+    // private volatile byte IOCON = (byte) 0b00000000;  // Unused
+    private volatile byte GPPUA = (byte) 0b00000000;
+    private volatile byte GPPUB = (byte) 0b00000000;
+    private volatile byte OLATA = (byte) 0b00000000;
+    private volatile byte OLATB = (byte) 0b00000000;
+    private volatile byte GPIOA = (byte) 0b00000000;
+    private volatile byte GPIOB = (byte) 0b00000000;
+
+    /**
+     * This is the first out of two private constructors.--the static factory methods must be used for object creation.
+     *
+     * @param bus            the SPI-Bus that the chip is connected to.
+     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
+     *                       or {@code null}.
+     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
+     *                       or {@code null}.
+     * @param readGPIO       whether to read from the GPIO registers or the INTCAP registers on interrupt.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
+    private MCP23S17(Context pi4j,
+                     SpiBus bus,
+                     DigitalOutput chipSelect,
+                     DigitalInput portAInterrupt,
+                     DigitalInput portBInterrupt,
+                     boolean readGPIO) {
+        this.chipSelect = Objects.requireNonNull(chipSelect, "chipSelect must be non-null");
+        this.readGPIORegisterOnInterrupt = readGPIO;
+        this.spi = pi4j.create(buildSpiConfig(pi4j, bus, SPI_SPEED_HZ));
+        this.portAInterrupt = portAInterrupt;
+        this.portBInterrupt = portBInterrupt;
+
+        // Take the CS pin high if it is not already since the CS is active low.
+        chipSelect.high();
+    }
+
+    /**
+     * This is the same as the first out of the two private
+     * constructors, it is just a helper to emulate default parameters via overloading.
+     *
+     * @param bus            the SPI-Bus that the chip is connected to.
+     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
+     *                       or {@code null}.
+     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
+     *                       or {@code null}.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
+    private MCP23S17(Context pi4j,
+                     SpiBus bus,
+                     DigitalOutput chipSelect,
+                     DigitalInput portAInterrupt,
+                     DigitalInput portBInterrupt) {
+        this(pi4j,
+                bus,
+                chipSelect,
+                portAInterrupt,
+                portBInterrupt,
+                false);
+    }
+
+    /**
+     * This is the second out of two private constructors.
+     * It is used for adding more ICs to the same SPI-Bus. See {@code MCP23S17.multipleNewOnSameBus()}.
+     * Note that the Address pins are disabled by default. The factory method enables them.
+     * --the static factory methods must be used for object creation
+     *
+     * @param other           The MCP23S17 IC with it's Address Pins all tied to 0, thus with address 0.
+     * @param hardWareAddress The Hardware Adress of this very MCP23S17 IC.
+     * @param portAInterrupt  the pin where INTA is connected
+     * @param portBInterrupt  the pin where INTB is connected
+     * @param readGPIO        whether to read from GPIO registers instead of INTCAP registers on interrupt.
+     * @throws IOException          if the instantiation of the {@link Spi Spi} object fails.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
+    private MCP23S17(MCP23S17 other,
+                     int hardWareAddress,
+                     DigitalInput portAInterrupt,
+                     DigitalInput portBInterrupt,
+                     boolean readGPIO)
+            throws IOException {
+        this.chipSelect = other.chipSelect;
+        this.readGPIORegisterOnInterrupt = readGPIO;
+        this.spi = other.spi;
+        this.portAInterrupt = portAInterrupt;
+        this.portBInterrupt = portBInterrupt;
+        //check whether the Address is in the correct range
+        if (hardWareAddress > 7 || hardWareAddress < 0) {
+            throw new IOException("hardWareAddress [" + hardWareAddress + "] must be between 0 and 7,"
+                    + " as there are only 3 physical address pins on the MCP23S12 IC.");
+        }
+        //the hardWareAddress is the three bits before the Read/Write bit:
+        //0b0100xxx0 to write to address xxx
+        //0b0100xxx1 to read from address xxx
+        this.readOpcode |= (((byte) hardWareAddress) << 1);
+        this.writeOpcode |= (((byte) hardWareAddress) << 1);
+    }
+
+    /**
+     * Instantiate a new {@code MCP23S17} object with no interrupts.
+     *
+     * @param bus        the SPI-Channel that the chip is connected to.
+     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param pi4j       the pi4j context
+     * @return a new {@code MCP23S17} object with no interrupts.
+     * @throws NullPointerException if the given chip select output is {@code null}.
+     */
+    public static MCP23S17 newWithoutInterrupts(Context pi4j,
+                                                SpiBus bus,
+                                                DigitalOutput chipSelect) {
+        return new MCP23S17(
+                pi4j,
+                bus,
+                chipSelect,
+                null,
+                null
+        );
+    }
+
+    /**
+     * Instantiate a number of {@code MCP23S17} objects on the same bus with consecutive adresses.
+     *
+     * @param bus    the SPI-Channel that the chip is connected to.
+     * @param pi4j   the {@link Context} object
+     * @param amount the amount of chips on the bus. must be between 1 and 8
+     * @return an {@link ArrayList} of {@code MCP23S17} objects with no interrupts.
+     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
+     * @throws IllegalArgumentException if there are too few/many chips on the bus ({@code amount} not in range 1-8)
+     * @throws NullPointerException     if the given chip select output is {@code null}.
+     */
+    public static ArrayList<MCP23S17> multipleNewOnSameBus(Context pi4j,
+                                                           SpiBus bus,
+                                                           int amount)
+            throws IOException, IllegalArgumentException {
+        if (amount > 8 || amount < 1) {
+            throw new IllegalArgumentException(
+                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
+        }
+        //todo: this is VERY arbitrary. The chipselect is already handled by the spi config,
+        //      but the code should not just init some random pin.
+        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
+                .id("CS" + 2)
+                .name("dummy chip select")
+                .address(2);
+
+        var chipSelect = pi4j.create(chipSelectConfig);
+        var integratedCircuitList = new ArrayList<MCP23S17>(amount);
+        var firstIC = new MCP23S17(pi4j, bus, chipSelect, null, null);
+        integratedCircuitList.add(firstIC);
+
+        for (int i = 1; i < amount; ++i) {
+            integratedCircuitList.add(new MCP23S17(firstIC, i, null, null, false));
+        }
+
+        //need to enable the hardware adress pins by sending the appropriate address write command.
+        //this enables every chip assuming they are connected to the same SPI bus and Chip select
+        firstIC.write(ADDR_IOCON, (byte) 0b00001000);
+
+        return integratedCircuitList;
+    }
+
+    /**
+     * Instantiate multiple new {@code MCP23S17} objects on the same SPI-bus with their hardware address pins enabled
+     * and with their port A and port B interrupt lines "tied" together.
+     *
+     * @param pi4j       the pi4j {@link  Context} object
+     * @param bus        the {@link  SpiBus} with which to communicatee with the chips
+     * @param interrupts an array of {@link DigitalInput}s to listen for interrupts from the chips
+     * @param amount     the amount of ICs on the bus
+     * @param readGPIO   true if on interrupt the GPIO registers should be read instead of the INTCAP registers
+     * @return all the newly instantiated ICs
+     * @throws IllegalArgumentException if the amount isn't in the range 1-8 or
+     *                                  {@code interrupts.length} is smaller than amount
+     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
+     * @throws NullPointerException     if the {@code interrupts} array contains null.
+     */
+    public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Context pi4j,
+                                                                             SpiBus bus,
+                                                                             DigitalInput[] interrupts,
+                                                                             int amount,
+                                                                             boolean readGPIO)
+            throws IllegalArgumentException, IOException {
+
+        if (amount > 8 || amount < 1) {
+            throw new IllegalArgumentException(
+                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
+        }
+        if (interrupts.length < amount) {
+            throw new IllegalArgumentException(
+                    "amount [" + amount + "] must be smaller than or equal to the amount of provided interrupts ["
+                            + interrupts.length + "]");
+        }
+        //TODO: this is VERY arbitrary. The chipselect is already handled by the spi config,
+        //      but the code should not just init some random pin.
+        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
+                .id("CS" + 2)
+                .name("dummy chip select")
+                .address(2);
+
+        var chipSelect = pi4j.create(chipSelectConfig);
+
+        var integratedCircuitList = new ArrayList<MCP23S17>(amount);
+        var firstIC = new MCP23S17(pi4j,
+                bus,
+                chipSelect,
+                Objects.requireNonNull(interrupts[0], "interrupts must be non-null"),
+                interrupts[0],
+                readGPIO);
+        integratedCircuitList.add(firstIC);
+        attachInterruptOnLow(interrupts[0], () -> {
+            int i = 0;
+            do {
+                firstIC.handlePortAInterrupt();
+                firstIC.handlePortBInterrupt();
+                delay(10);
+                ++i;
+            } while (interrupts[0].state().isLow() && i < 1);//TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
+
+            if (i > 1) {
+                LOG.warn("read {} times to clear interrupt.", i);
+            }
+        });
+
+        for (int i = 1; i < amount; ++i) {
+            var currentIC = new MCP23S17(firstIC,
+                    i,
+                    Objects.requireNonNull(interrupts[i], "interrupts must be non-null"),
+                    interrupts[i],
+                    readGPIO);
+            integratedCircuitList.add(currentIC);
+
+            DigitalInput interrupt = interrupts[i];
+            attachInterruptOnLow(interrupt, () -> {
+                int j = 0;
+                do {
+                    currentIC.handlePortAInterrupt();
+                    currentIC.handlePortBInterrupt();
+                    delay(10);
+                    ++j;
+                } while (interrupt.state().isLow() && j < 1); //TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
+                if (j > 1) {
+                    LOG.warn("read {} times to clear interrupt.", j);
+                }
+            });
+        }
+
+
+        // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
+        // should address ALL chips as the address pins aren't enabled yet
+        byte mirrorAndHAEN = 0x40;
+        //need to enable the hardware address pins by sending the appropriate address write command.
+        //this enables every chip assuming they are connected to the same SPI bus and Chip select
+        mirrorAndHAEN |= 0b00001000;
+        firstIC.write(ADDR_IOCON, mirrorAndHAEN);
+        //last chip somehow doesn't tie its interrupt together. Maybe capacitance because it is
+        //the last one on the bus? makes little sense.
+        //anyway, writing to the last one specifically and telling it to tie its interrupts
+        //together works
+        integratedCircuitList.get(integratedCircuitList.size() - 1).write(ADDR_IOCON, mirrorAndHAEN);
+
+        return integratedCircuitList;
+    }
+
+    /**
+     * Instantiate a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
+     *
+     * @param bus        the SPI-Bus that the chip is connected to.
+     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param interrupt  the interrupt {@linkplain DigitalInput input pin}.
+     * @param pi4j       the pi4j context
+     * @return a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
+     * @throws NullPointerException if the given chip select output or tied interrupt input is {@code null}.
+     */
+    public static MCP23S17 newWithTiedInterrupts(Context pi4j,
+                                                 SpiBus bus,
+                                                 DigitalOutput chipSelect,
+                                                 DigitalInput interrupt) {
+        MCP23S17 ioExpander = new MCP23S17(
+                pi4j,
+                bus,
+                chipSelect,
+                Objects.requireNonNull(interrupt, "interrupt must be non-null"),
+                interrupt
+        );
+        // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
+        ioExpander.write(ADDR_IOCON, (byte) 0x40);
+        attachInterruptOnLow(interrupt, () -> {
+            ioExpander.handlePortAInterrupt();
+            ioExpander.handlePortBInterrupt();
+        });
+        return ioExpander;
+    }
+
+    /**
+     * Instantiate a new {@code MCP23S17} object with individual port A and port B interrupt lines.
+     *
+     * @param bus            the SPI-Bus that the chip is connected to.
+     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
+     * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
+     * @param pi4j           the pi4j context
+     * @return a new {@code MCP23S17} object with individual port A and port B interrupt lines.
+     * @throws NullPointerException if the given chip select output or either of the interrupt inputs is {@code null}.
+     */
+    public static MCP23S17 newWithInterrupts(Context pi4j,
+                                             SpiBus bus,
+                                             DigitalOutput chipSelect,
+                                             DigitalInput portAInterrupt,
+                                             DigitalInput portBInterrupt) {
+        MCP23S17 ioExpander = new MCP23S17(
+                pi4j,
+                bus,
+                chipSelect,
+                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
+                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
+        );
+        attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
+        attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
+        return ioExpander;
+    }
+
+    /**
+     * Instantiate a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
+     *
+     * @param bus            the SPI-Bus that the chip is connected to.
+     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
+     * @param pi4j           the pi4j context
+     * @return a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
+     * @throws NullPointerException if the given chip select output or the port A interrupt inputs is {@code null}.
+     */
+    public static MCP23S17 newWithPortAInterrupts(Context pi4j,
+                                                  SpiBus bus,
+                                                  DigitalOutput chipSelect,
+                                                  DigitalInput portAInterrupt) {
+        MCP23S17 ioExpander = new MCP23S17(
+                pi4j,
+                bus,
+                chipSelect,
+                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
+                null
+        );
+        attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
+        return ioExpander;
+    }
+
+    /**
+     * Instantiate a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
+     *
+     * @param bus            the SPI-Bus that the chip is connected to.
+     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
+     * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
+     * @param pi4j           the pi4j context
+     * @return a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
+     * @throws NullPointerException if the given chip select output or the port B interrupt inputs is {@code null}.
+     */
+    public static MCP23S17 newWithPortBInterrupts(Context pi4j,
+                                                  SpiBus bus,
+                                                  DigitalOutput chipSelect,
+                                                  DigitalInput portBInterrupt) {
+        MCP23S17 ioExpander = new MCP23S17(
+                pi4j,
+                bus,
+                chipSelect,
+                null,
+                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
+        );
+        attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
+        return ioExpander;
+    }
+
+    /**
+     * Attach a {@link Runnable Runnable} callback to the given {@linkplain DigitalInput input pin} to be invoked
+     * whenever the pin goes low.
+     *
+     * @param interrupt the input pin to attach the interrupt to.
+     * @param callback  the {@code Runnable} callback.
+     */
+    private static void attachInterruptOnLow(DigitalInput interrupt, Runnable callback) {
+        interrupt.addListener(event -> {
+            if (event.state().isLow()) {
+                callback.run();
+            }
+        });
+    }
+
+    /**
+     * Utility function to sleep for the specified amount of milliseconds.
+     * An {@link InterruptedException} will be caught and ignored while setting the interrupt flag again.
+     *
+     * @param milliseconds Time in milliseconds to sleep
+     */
+    private static void delay(long milliseconds) {
+        try {
+            Thread.sleep(milliseconds);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Builds a new SPI instance for the MCP23S17 IC
+     *
+     * @param pi4j Pi4J context
+     * @return SPI instance
+     */
+    private SpiConfig buildSpiConfig(Context pi4j, SpiBus bus, int frequency) {
+        return Spi.newConfigBuilder(pi4j)
+                .id("MCPSPI")
+                .name("GPIO-Circuit")
+                .description("SPI-Config for GPIO-Extension Integrated Circuits (MCP23S17)")
+                .bus(bus)
+                .chipSelect(SpiChipSelect.CS_0)
+                .mode(SpiMode.MODE_0)
+                .baud(frequency)
+                .build();
+    }
+
+    /**
+     * Get the {@link PinView PinView} corresponding to the given {@link Pin Pin}.
+     *
+     * @param pin the {@code Pin}.
+     * @return the corresponding {@code PinView}.
+     */
+    public PinView getPinView(Pin pin) {
+        PinView pinView;
+        // This is called from callInterruptListeners when an interrupt occurs, hence the need for sync.
+        synchronized (pinViews) {
+            pinView = pinViews.get(Objects.requireNonNull(pin, "pin must be non-null"));
+            if (pinView == null) {
+                pinView = new PinView(pin);
+                pinViews.put(pin, pinView);
+            }
+        }
+        return pinView;
+    }
+
+    /**
+     * <p>
+     * Get an {@link Iterator Iterator} over all the {@link PinView PinView}s for this {@code MCP23S17}.
+     * </p>
+     * <p>
+     * The returned {@code Iterator} returns the {@code PinView}s in the order of their pin numbers (i.e. the
+     * {@code PinView} for {@link Pin#PIN0 PIN0} comes first and the {@code PinView} for {@link Pin#PIN15 PIN15} comes
+     * last). The returned {@code Iterator} does not support {@linkplain Iterator#remove() removal of elements}.
+     * </p>
+     * <p>
+     * Note that if certain {@code PinView}s have not yet been lazily-loaded, they will be loaded as needed by the
+     * returned {@code Iterator}.
+     * </p>
+     *
+     * @return an iterator over all the {@link PinView PinView}s for this {@code MCP23S17}.
+     */
+    public Iterator<PinView> getPinViewIterator() {
+        return new Iterator<>() {
+
+            private int current = 0;
+
+            @Override
+            public boolean hasNext() {
+                return current < 16;
+            }
+
+            @Override
+            public PinView next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                return getPinView(Pin.fromPinNumber(current++));
+            }
+        };
+    }
+
+    /**
+     * preconfigures all 16 pins of the MCP23S17 to pulled-up interrupt-inputs
+     * The correct values are also being written to the corresponding registers and the
+     * GPIO registers are read once to clear any pending interrupts on startup.
+     *
+     * @return an {@link ArrayList} of 16 {@linkplain PinView} objects
+     * that are all configured to be inpputs, pulled up and interrupt-on-change enabled.
+     * @throws IOException when any read or write operation fails.
+     */
+    public List<PinView> getAllPinsAsPulledUpInterruptInput() throws IOException {
+        var pinList = new ArrayList<PinView>(16);
+        var iterator = getPinViewIterator();
+        while (iterator.hasNext()) {
+            var pv = iterator.next();
+            pv.setAsInput();
+            pv.enablePullUp();
+            pv.enableInterrupt();
+            pinList.add(pv);
+        }
+        writeIODIRA();
+        writeIODIRB();
+        writeGPPUA();
+        writeGPPUB();
+        writeGPINTENA();
+        writeGPINTENB();
+        //read the GPIO register to clear first pending interrupt
+        readGPIOA();
+        readGPIOB();
+        return pinList;
+    }
+
+    /**
+     * <p>
+     * Add a global {@linkplain InterruptListener interrupt listener}.
+     * </p>
+     * <p>
+     * This does no error checking with respect to whether or not interrupts are enabled.
+     * </p>
+     *
+     * @param listener the global listener to add.
+     * @throws IllegalArgumentException if the given global listener is already registered.
+     * @throws NullPointerException     if the given global listener is {@code null}.
+     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
+     */
+    public void addGlobalListener(InterruptListener listener) {
+        synchronized (globalListeners) {
+            if (globalListeners.contains(
+                    Objects.requireNonNull(listener, "cannot add null global listener")
+            )) {
+                throw new IllegalArgumentException("global listener already registered");
+            }
+            globalListeners.add(listener);
+        }
+    }
+
+    /**
+     * Remove a global {@linkplain InterruptListener interrupt listener}.
+     *
+     * @param listener the global listener to remove.
+     * @throws IllegalArgumentException if the given global listener was not previously registered.
+     * @throws NullPointerException     if the given global listener is {@code null}.
+     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
+     */
+    public void removeGlobalListener(InterruptListener listener) {
+        synchronized (globalListeners) {
+            if (!globalListeners.contains(
+                    Objects.requireNonNull(listener, "cannot remove null global listener")
+            )) {
+                throw new IllegalArgumentException("cannot remove unregistered global listener");
+            }
+            globalListeners.remove(listener);
+        }
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write a byte to the register pointed to by the given address.
+     *
+     * @param registerAddress the register address.
+     * @param value           the value to write to the register.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    private void write(byte registerAddress, byte value) {
+        // Without testing it is unclear whether the synchronization here is necessary--the documentation on read
+        // is poor.
+        synchronized (spi) {
+            try {
+                chipSelect.low();
+                spi.write(writeOpcode, registerAddress, value);
+            } finally {
+                // Make sure the chip select line is brought high again in finally
+                // block so that failure may be recoverable.
+                chipSelect.high();
+            }
+        }
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the IODIRA byte to the IODIRA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeIODIRA() {
+        write(ADDR_IODIRA, IODIRA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the IODIRB byte to the IODIRB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeIODIRB() {
+        write(ADDR_IODIRB, IODIRB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the IPOLA byte to the IPOLA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeIPOLA() {
+        write(ADDR_IPOLA, IPOLA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the IPOLB byte to the IPOLB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeIPOLB() {
+        write(ADDR_IPOLB, IPOLB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the GPINTENA byte to the GPINTENA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeGPINTENA() {
+        write(ADDR_GPINTENA, GPINTENA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the GPINTENB byte to the GPINTENB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeGPINTENB() {
+        write(ADDR_GPINTENB, GPINTENB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the DEFVALA byte to the DEFVALA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeDEFVALA() {
+        write(ADDR_DEFVALA, DEFVALA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the DEFVALB byte to the DEFVALB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeDEFVALB() {
+        write(ADDR_DEFVALB, DEFVALB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the INTCONA byte to the INTCONA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeINTCONA() {
+        write(ADDR_INTCONA, INTCONA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the INTCONB byte to the INTCONB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeINTCONB() {
+        write(ADDR_INTCONB, INTCONB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the GPPUA byte to the GPPUA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeGPPUA() {
+        write(ADDR_GPPUA, GPPUA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the GPPUB byte to the GPPUB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeGPPUB() {
+        write(ADDR_GPPUB, GPPUB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the OLATA byte to the OLATA register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeOLATA() {
+        write(ADDR_OLATA, OLATA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and write the OLATB byte to the OLATB register.
+     *
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public void writeOLATB() {
+        write(ADDR_OLATB, OLATB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address.
+     *
+     * @param registerAddress the register address.
+     * @return the byte read from the register.
+     * @throws IOException if the SPI read procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} object so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    private byte read(byte registerAddress) throws IOException {
+        byte[] data = new byte[3];
+        // The 0x00 byte is just arbitrary filler.
+        byte[] send = {readOpcode, registerAddress, (byte) 0x00};
+        synchronized (spi) {
+            try {
+                chipSelect.low();
+                int res;
+                res = spi.transfer(send, data);
+                if (res < 0) {
+                    throw new IOException("oh noes! SPI transfer result was negative: " + res);
+                }
+            } finally {
+                // Make sure the chip select line is brought high again
+                // in finally block so that failure may be recoverable.
+                chipSelect.high();
+            }
+        }
+        return data[2];
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read the GPIOA register.
+     *
+     * @return the register's byte
+     * @throws IOException if the SPI write procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public byte readGPIOA() throws IOException {
+        GPIOA = read(ADDR_GPIOA);
+        return GPIOA;
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read the GPIOB register.
+     *
+     * @return the register's byte
+     * @throws IOException if the SPI write procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public byte readGPIOB() throws IOException {
+        GPIOB = read(ADDR_GPIOB);
+        return GPIOB;
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read the GPINTENA register.
+     *
+     * @return the register's byte
+     * @throws IOException if the SPI write procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public byte readGPINTENA() throws IOException {
+        return read(ADDR_GPINTENA);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read the GPINTENB register.
+     *
+     * @return the register's byte
+     * @throws IOException if the SPI write procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public byte readGPINTENB() throws IOException {
+        return read(ADDR_GPINTENB);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read the IOCON register.
+     *
+     * @return the register's byte
+     * @throws IOException if the SPI write procedure fails.
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    public byte readIOCON() throws IOException {
+        return read(ADDR_IOCON);
+    }
+
+    /**
+     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address. This
+     * will rethrow any {@link IOException IOException}s that occur as {@link RuntimeException RuntimeException}s.
+     *
+     * @param registerAddress the register address.
+     * @return the byte read from the register.
+     * @throws RuntimeException if the SPI read procedure fails (rethrown from {@code IOException}).
+     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
+     * initiated at the same time.
+     */
+    private byte uncheckedRead(byte registerAddress) {
+        try {
+            return read(registerAddress);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * This is the callback for when port A interrupts occur. Read the INTFA and INTCAPA or GPIOA registers
+     * depending on {@code readGPIORegisterOnInterrupt} and alert all the
+     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
+     */
+    private void handlePortAInterrupt() {
+        byte interruptMask = uncheckedRead(ADDR_INTFA);
+        byte interruptCapture = uncheckedRead(ADDR_INTCAPA);
+
+        if (readGPIORegisterOnInterrupt) {
+            byte currentCapture = uncheckedRead(ADDR_GPIOA);
+            //if GPIO already differs from INTCAP then ignore. This solves the problem that in practice,
+            //neighbouring pins might get pulled down because of capacitance or something.
+            interruptMask &= ~(interruptCapture ^ currentCapture);
+        }
+        callInterruptListeners(interruptMask, interruptCapture, PORT_A_PINS);
+    }
+
+    /**
+     * This is the callback for when port B interrupts occur. Read the INTFB and INTCAPB or GPIOB registers
+     * depending on {@code readGPIORegisterOnInterrupt} and alert all the
+     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
+     */
+    private void handlePortBInterrupt() {
+        byte interruptMask = uncheckedRead(ADDR_INTFB);
+        byte interruptCapture = uncheckedRead(ADDR_INTCAPB);
+
+        if (readGPIORegisterOnInterrupt) {
+            byte currentCapture = uncheckedRead(ADDR_GPIOB);
+            //if GPIO already changed from INTCAP then ignore.
+            interruptMask &= ~(interruptCapture ^ currentCapture);
+        }
+        callInterruptListeners(interruptMask, interruptCapture, PORT_B_PINS);
+    }
+
+    /**
+     * Using the given state of the INTFx register, determine which of the given {@linkplain Pin pins} is responsible
+     * for generating an interrupt. Then, call all the global listeners and pin-specific listeners for the pin which
+     * generated the interrupt with the captured value of the pin at the time of the interrupt.
+     *
+     * @param intf   the state of the INTFx register at the time of the interrupt.
+     * @param intcap the state of the INTCAPx register at the time of the interrupt.
+     * @param pins   either {@link MCP23S17#PORT_A_PINS PORT_A_PINS} or {@link MCP23S17#PORT_B_PINS PORT_B_PINS},
+     *               whichever is appropriate.
+     */
+    private void callInterruptListeners(byte intf, byte intcap, Pin[] pins) {
+        for (Pin pin : pins) {
+            if (pin.getCorrespondingBit(intf)) {
+                boolean capturedValue = pin.getCorrespondingBit(intcap);
+                synchronized (globalListeners) {
+                    for (InterruptListener listener : globalListeners) {
+                        listener.onInterrupt(capturedValue, pin);
+                    }
+                }
+                // This can in rare cases where the IO expander is already configured create a PinView object before the
+                // user indirectly creates it lazily...
+                getPinView(pin).relayInterruptToListeners(capturedValue);
+            }
+        }
+    }
+
+    /**
+     * get the pi4j {@link Spi} object.
+     * <p>
+     * Useful when mocking SPI in tests
+     *
+     * @return the pi4j {@link Spi} object
+     */
+    public Spi getSpi() {
+        return spi;
+    }
 
     /**
      * <p>
@@ -95,6 +1076,38 @@ public final class MCP23S17 {
             this.pinNumber = bitIndex + (portA ? 0 : 8);
             this.portA = portA;
             this.mask = (byte) (1 << bitIndex);
+        }
+
+        /**
+         * Get the {@code Pin} corresponding to the given pin number.
+         *
+         * @param pinNumber the pin number.
+         * @return the {@code Pin} corresponding to the given pin number.
+         * @throws IllegalArgumentException if the given pin number is invalid (i.e. less than 0 or greater than 15).
+         */
+        public static Pin fromPinNumber(int pinNumber) {
+            return switch (pinNumber) {
+                // Port A
+                case 0 -> PIN0;
+                case 1 -> PIN1;
+                case 2 -> PIN2;
+                case 3 -> PIN3;
+                case 4 -> PIN4;
+                case 5 -> PIN5;
+                case 6 -> PIN6;
+                case 7 -> PIN7;
+
+                // Port B
+                case 8 -> PIN8;
+                case 9 -> PIN9;
+                case 10 -> PIN10;
+                case 11 -> PIN11;
+                case 12 -> PIN12;
+                case 13 -> PIN13;
+                case 14 -> PIN14;
+                case 15 -> PIN15;
+                default -> throw new IllegalArgumentException("illegal pin number");
+            };
         }
 
         /**
@@ -171,38 +1184,27 @@ public final class MCP23S17 {
             }
             return (byte) (b & ~mask);
         }
+    }
+
+    /**
+     * A {@linkplain FunctionalInterface functional interface} representing an interrupt listener callback.
+     * {@code InterruptListener}s are registered via
+     * {@link MCP23S17#addGlobalListener(InterruptListener) addGlobalListener} on {@link MCP23S17 MCP23S17} objects and
+     * {@link PinView#addListener(InterruptListener) addListener} on {@link PinView PinView} objects, and removed by the
+     * similarly-named methods.
+     *
+     * @author Robert Russell
+     */
+    @FunctionalInterface
+    public interface InterruptListener {
 
         /**
-         * Get the {@code Pin} corresponding to the given pin number.
+         * Called whenever an interrupt occurs on a pin for which this listener is registered to receive events.
          *
-         * @param pinNumber the pin number.
-         * @return the {@code Pin} corresponding to the given pin number.
-         * @throws IllegalArgumentException if the given pin number is invalid (i.e. less than 0 or greater than 15).
+         * @param capturedValue the value on the pin at the time of the interrupt.
+         * @param pin           the {@link Pin Pin} on which the interrupt occurred.
          */
-        public static Pin fromPinNumber(int pinNumber) {
-            return switch (pinNumber) {
-                // Port A
-                case 0 -> PIN0;
-                case 1 -> PIN1;
-                case 2 -> PIN2;
-                case 3 -> PIN3;
-                case 4 -> PIN4;
-                case 5 -> PIN5;
-                case 6 -> PIN6;
-                case 7 -> PIN7;
-
-                // Port B
-                case 8 -> PIN8;
-                case 9 -> PIN9;
-                case 10 -> PIN10;
-                case 11 -> PIN11;
-                case 12 -> PIN12;
-                case 13 -> PIN13;
-                case 14 -> PIN14;
-                case 15 -> PIN15;
-                default -> throw new IllegalArgumentException("illegal pin number");
-            };
-        }
+        void onInterrupt(boolean capturedValue, Pin pin);
     }
 
     /**
@@ -625,1026 +1627,6 @@ public final class MCP23S17 {
                     listener.onInterrupt(capturedValue, pin);
                 }
             }
-        }
-    }
-
-    /**
-     * A {@linkplain FunctionalInterface functional interface} representing an interrupt listener callback.
-     * {@code InterruptListener}s are registered via
-     * {@link MCP23S17#addGlobalListener(InterruptListener) addGlobalListener} on {@link MCP23S17 MCP23S17} objects and
-     * {@link PinView#addListener(InterruptListener) addListener} on {@link PinView PinView} objects, and removed by the
-     * similarly-named methods.
-     *
-     * @author Robert Russell
-     */
-    @FunctionalInterface
-    public interface InterruptListener {
-
-        /**
-         * Called whenever an interrupt occurs on a pin for which this listener is registered to receive events.
-         *
-         * @param capturedValue the value on the pin at the time of the interrupt.
-         * @param pin           the {@link Pin Pin} on which the interrupt occurred.
-         */
-        void onInterrupt(boolean capturedValue, Pin pin);
-    }
-
-    private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
-    // todo: this should be settable by the user
-    private static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
-
-    // Register addresses for IOCON.BANK = 0
-    private static final byte ADDR_IODIRA = 0x00;
-    private static final byte ADDR_IODIRB = 0x01;
-    private static final byte ADDR_IPOLA = 0x02;
-    private static final byte ADDR_IPOLB = 0x03;
-    private static final byte ADDR_GPINTENA = 0x04;
-    private static final byte ADDR_GPINTENB = 0x05;
-    private static final byte ADDR_DEFVALA = 0x06;
-    private static final byte ADDR_DEFVALB = 0x07;
-    private static final byte ADDR_INTCONA = 0x08;
-    private static final byte ADDR_INTCONB = 0x09;
-    private static final byte ADDR_IOCON = 0x0A;
-    private static final byte ADDR_GPPUA = 0x0C;
-    private static final byte ADDR_GPPUB = 0x0D;
-    private static final byte ADDR_INTFA = 0x0E;
-    private static final byte ADDR_INTFB = 0x0F;
-    private static final byte ADDR_INTCAPA = 0x10;
-    private static final byte ADDR_INTCAPB = 0x11;
-    private static final byte ADDR_GPIOA = 0x12;
-    private static final byte ADDR_GPIOB = 0x13;
-    private static final byte ADDR_OLATA = 0x14;
-    private static final byte ADDR_OLATB = 0x15;
-
-    // OPCODES--these are written before a register address in the read and write processes.
-    //NOTE: If ICs with different Hardware addresses get added, those addresses are stored in those opcodes.
-    //that's why they're not static.
-
-    //todo: probably best to store the HW addresses in a separate byte and or them in the write function
-    private byte writeOpcode = 0x40;
-    private byte readOpcode = 0x41;
-
-    // These arrays are used for interrupt handling. (Interrupts are port-specific, so having separate arrays for each
-    // port means we can iterate over the pins belonging to either port A or B.)
-    private static final Pin[] PORT_A_PINS =
-            {Pin.PIN0, Pin.PIN1, Pin.PIN2, Pin.PIN3, Pin.PIN4, Pin.PIN5, Pin.PIN6, Pin.PIN7};
-    private static final Pin[] PORT_B_PINS =
-            {Pin.PIN8, Pin.PIN9, Pin.PIN10, Pin.PIN11, Pin.PIN12, Pin.PIN13, Pin.PIN14, Pin.PIN15};
-
-    /**
-     * The output pin for the chip select line on the MCP23S17 chip.
-     */
-    private final DigitalOutput chipSelect;
-
-    /**
-     * The SPI communication interface.
-     */
-    private final Spi spi;
-
-    /**
-     * Stores whether this chip will read the GPIO registers to check for state change on the pins
-     * or the INTCAP registers.
-     */
-    private final boolean readGPIORegisterOnInterrupt;
-
-    /**
-     * The lazily-instantiated {@link PinView PinView}s. This object is synchronized on in
-     * {@link MCP23S17#getPinView(Pin) getPinView} as {@code PinView}s are accessed in the
-     * {@linkplain MCP23S17#callInterruptListeners(byte, byte, Pin[]) interrupt handling routine} (which is invoked in a
-     * different thread).
-     */
-    private final EnumMap<Pin, PinView> pinViews = new EnumMap<>(Pin.class);
-
-    /**
-     * The registered global listeners--not pin-specific listeners. This object is synchronized on so that listeners
-     * cannot be added or removed while an interrupt is being processed or vice versa.
-     */
-    private final Collection<InterruptListener> globalListeners = new HashSet<>(0);
-
-    // These are only referenced so they are not GCed.
-    private final DigitalInput portAInterrupt;
-    private final DigitalInput portBInterrupt;
-
-    // The bytes representing the value of the chip's various registers.
-    // They are initialized to the corresponding registers' initial value, as given in the MCP23S17 datasheet.
-    // Note that these bytes do not necessarily represent the actual value in the corresponding register (i.e. they may
-    // be out of sync with the registers).
-    private volatile byte IODIRA = (byte) 0b11111111;
-    private volatile byte IODIRB = (byte) 0b11111111;
-    private volatile byte IPOLA = (byte) 0b00000000;
-    private volatile byte IPOLB = (byte) 0b00000000;
-    private volatile byte GPINTENA = (byte) 0b00000000;
-    private volatile byte GPINTENB = (byte) 0b00000000;
-    private volatile byte DEFVALA = (byte) 0b00000000;
-    private volatile byte DEFVALB = (byte) 0b00000000;
-    private volatile byte INTCONA = (byte) 0b00000000;
-    private volatile byte INTCONB = (byte) 0b00000000;
-    // private volatile byte IOCON = (byte) 0b00000000;  // Unused
-    private volatile byte GPPUA = (byte) 0b00000000;
-    private volatile byte GPPUB = (byte) 0b00000000;
-    private volatile byte OLATA = (byte) 0b00000000;
-    private volatile byte OLATB = (byte) 0b00000000;
-
-    private volatile byte GPIOA = (byte) 0b00000000;
-
-    private volatile byte GPIOB = (byte) 0b00000000;
-
-    /**
-     * This {@code Object}'s intrinsic lock is acquired whenever one of the above bytes is written to so that two
-     * threads may not write to the same byte at the same time. Ideally we would have one lock per byte because, for
-     * example, a thread writing only to IODIRB need not yield to a thread writing only to IODIRA, but then we would
-     * have fourteen lock objects! Byte writes should be infrequent enough and fast enough for this to not be an issue,
-     * however.
-     */
-    private final Object byteWriteLock = new Object();
-
-    /**
-     * This is the first out of two private constructors.--the static factory methods must be used for object creation.
-     *
-     * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
-     *                       or {@code null}.
-     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
-     *                       or {@code null}.
-     * @param readGPIO       whether to read from the GPIO registers or the INTCAP registers on interrupt.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    private MCP23S17(Context pi4j,
-                     SpiBus bus,
-                     DigitalOutput chipSelect,
-                     DigitalInput portAInterrupt,
-                     DigitalInput portBInterrupt,
-                     boolean readGPIO) {
-        this.chipSelect = Objects.requireNonNull(chipSelect, "chipSelect must be non-null");
-        this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = pi4j.create(buildSpiConfig(pi4j, bus, SPI_SPEED_HZ));
-        this.portAInterrupt = portAInterrupt;
-        this.portBInterrupt = portBInterrupt;
-
-        // Take the CS pin high if it is not already since the CS is active low.
-        chipSelect.high();
-    }
-
-    /**
-     * This is the same as the first out of the two private
-     * constructors, it is just a helper to emulate default parameters via overloading.
-     *
-     * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
-     *                       or {@code null}.
-     * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
-     *                       or {@code null}.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    private MCP23S17(Context pi4j,
-                     SpiBus bus,
-                     DigitalOutput chipSelect,
-                     DigitalInput portAInterrupt,
-                     DigitalInput portBInterrupt) {
-        this(pi4j,
-                bus,
-                chipSelect,
-                portAInterrupt,
-                portBInterrupt,
-                false);
-    }
-
-    /**
-     * This is the second out of two private constructors.
-     * It is used for adding more ICs to the same SPI-Bus. See {@code MCP23S17.multipleNewOnSameBus()}.
-     * Note that the Address pins are disabled by default. The factory method enables them.
-     * --the static factory methods must be used for object creation
-     *
-     * @param other           The MCP23S17 IC with it's Address Pins all tied to 0, thus with address 0.
-     * @param hardWareAddress The Hardware Adress of this very MCP23S17 IC.
-     * @param portAInterrupt  the pin where INTA is connected
-     * @param portBInterrupt  the pin where INTB is connected
-     * @param readGPIO        whether to read from GPIO registers instead of INTCAP registers on interrupt.
-     * @throws IOException          if the instantiation of the {@link Spi Spi} object fails.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    private MCP23S17(MCP23S17 other,
-                     int hardWareAddress,
-                     DigitalInput portAInterrupt,
-                     DigitalInput portBInterrupt,
-                     boolean readGPIO)
-            throws IOException {
-        this.chipSelect = other.chipSelect;
-        this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = other.spi;
-        this.portAInterrupt = portAInterrupt;
-        this.portBInterrupt = portBInterrupt;
-        //check whether the Address is in the correct range
-        if (hardWareAddress > 7 || hardWareAddress < 0) {
-            throw new IOException("hardWareAddress [" + hardWareAddress + "] must be between 0 and 7,"
-                    + " as there are only 3 physical address pins on the MCP23S12 IC.");
-        }
-        //the hardWareAddress is the three bits before the Read/Write bit:
-        //0b0100xxx0 to write to address xxx
-        //0b0100xxx1 to read from address xxx
-        this.readOpcode |= (((byte) hardWareAddress) << 1);
-        this.writeOpcode |= (((byte) hardWareAddress) << 1);
-    }
-
-    /**
-     * Builds a new SPI instance for the MCP23S17 IC
-     *
-     * @param pi4j Pi4J context
-     * @return SPI instance
-     */
-    private SpiConfig buildSpiConfig(Context pi4j, SpiBus bus, int frequency) {
-        return Spi.newConfigBuilder(pi4j)
-                .id("MCPSPI")
-                .name("GPIO-Circuit")
-                .description("SPI-Config for GPIO-Extension Integrated Circuits (MCP23S17)")
-                .bus(bus)
-                .chipSelect(SpiChipSelect.CS_0)
-                .mode(SpiMode.MODE_0)
-                .baud(frequency)
-                .build();
-    }
-
-    /**
-     * Get the {@link PinView PinView} corresponding to the given {@link Pin Pin}.
-     *
-     * @param pin the {@code Pin}.
-     * @return the corresponding {@code PinView}.
-     */
-    public PinView getPinView(Pin pin) {
-        PinView pinView;
-        // This is called from callInterruptListeners when an interrupt occurs, hence the need for sync.
-        synchronized (pinViews) {
-            pinView = pinViews.get(Objects.requireNonNull(pin, "pin must be non-null"));
-            if (pinView == null) {
-                pinView = new PinView(pin);
-                pinViews.put(pin, pinView);
-            }
-        }
-        return pinView;
-    }
-
-    /**
-     * <p>
-     * Get an {@link Iterator Iterator} over all the {@link PinView PinView}s for this {@code MCP23S17}.
-     * </p>
-     * <p>
-     * The returned {@code Iterator} returns the {@code PinView}s in the order of their pin numbers (i.e. the
-     * {@code PinView} for {@link Pin#PIN0 PIN0} comes first and the {@code PinView} for {@link Pin#PIN15 PIN15} comes
-     * last). The returned {@code Iterator} does not support {@linkplain Iterator#remove() removal of elements}.
-     * </p>
-     * <p>
-     * Note that if certain {@code PinView}s have not yet been lazily-loaded, they will be loaded as needed by the
-     * returned {@code Iterator}.
-     * </p>
-     *
-     * @return an iterator over all the {@link PinView PinView}s for this {@code MCP23S17}.
-     */
-    public Iterator<PinView> getPinViewIterator() {
-        return new Iterator<>() {
-
-            private int current = 0;
-
-            @Override
-            public boolean hasNext() {
-                return current < 16;
-            }
-
-            @Override
-            public PinView next() {
-                if (!hasNext()) {
-                    throw new NoSuchElementException();
-                }
-                return getPinView(Pin.fromPinNumber(current++));
-            }
-        };
-    }
-
-    /**
-     * preconfigures all 16 pins of the MCP23S17 to pulled-up interrupt-inputs
-     * The correct values are also being written to the corresponding registers and the
-     * GPIO registers are read once to clear any pending interrupts on startup.
-     *
-     * @return an {@link ArrayList} of 16 {@linkplain PinView} objects
-     * that are all configured to be inpputs, pulled up and interrupt-on-change enabled.
-     * @throws IOException when any read or write operation fails.
-     */
-    public List<PinView> getAllPinsAsPulledUpInterruptInput() throws IOException {
-        var pinList = new ArrayList<PinView>(16);
-        var iterator = getPinViewIterator();
-        while (iterator.hasNext()) {
-            var pv = iterator.next();
-            pv.setAsInput();
-            pv.enablePullUp();
-            pv.enableInterrupt();
-            pinList.add(pv);
-        }
-        writeIODIRA();
-        writeIODIRB();
-        writeGPPUA();
-        writeGPPUB();
-        writeGPINTENA();
-        writeGPINTENB();
-        //read the GPIO register to clear first pending interrupt
-        readGPIOA();
-        readGPIOB();
-        return pinList;
-    }
-
-    /**
-     * <p>
-     * Add a global {@linkplain InterruptListener interrupt listener}.
-     * </p>
-     * <p>
-     * This does no error checking with respect to whether or not interrupts are enabled.
-     * </p>
-     *
-     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
-     *
-     * @param listener the global listener to add.
-     * @throws IllegalArgumentException if the given global listener is already registered.
-     * @throws NullPointerException if the given global listener is {@code null}.
-     */
-    public void addGlobalListener(InterruptListener listener) {
-        synchronized (globalListeners) {
-            if (globalListeners.contains(
-                    Objects.requireNonNull(listener, "cannot add null global listener")
-            )) {
-                throw new IllegalArgumentException("global listener already registered");
-            }
-            globalListeners.add(listener);
-        }
-    }
-
-    /**
-     * Remove a global {@linkplain InterruptListener interrupt listener}.
-     *
-     * @implSpec This is synchronized on the collection of global listeners, so it is thread safe.
-     *
-     * @param listener the global listener to remove.
-     * @throws IllegalArgumentException if the given global listener was not previously registered.
-     * @throws NullPointerException if the given global listener is {@code null}.
-     */
-    public void removeGlobalListener(InterruptListener listener) {
-        synchronized (globalListeners) {
-            if (!globalListeners.contains(
-                    Objects.requireNonNull(listener, "cannot remove null global listener")
-            )) {
-                throw new IllegalArgumentException("cannot remove unregistered global listener");
-            }
-            globalListeners.remove(listener);
-        }
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write a byte to the register pointed to by the given address.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     *
-     * @param registerAddress the register address.
-     * @param value           the value to write to the register.
-     *
-     */
-    private void write(byte registerAddress, byte value) {
-        // Without testing it is unclear whether the synchronization here is necessary--the documentation on read
-        // is poor.
-        synchronized (spi) {
-            try {
-                chipSelect.low();
-                spi.write(writeOpcode, registerAddress, value);
-            } finally {
-                // Make sure the chip select line is brought high again in finally
-                // block so that failure may be recoverable.
-                chipSelect.high();
-            }
-        }
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the IODIRA byte to the IODIRA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeIODIRA() {
-        write(ADDR_IODIRA, IODIRA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the IODIRB byte to the IODIRB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeIODIRB() {
-        write(ADDR_IODIRB, IODIRB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the IPOLA byte to the IPOLA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeIPOLA() {
-        write(ADDR_IPOLA, IPOLA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the IPOLB byte to the IPOLB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeIPOLB() {
-        write(ADDR_IPOLB, IPOLB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the GPINTENA byte to the GPINTENA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeGPINTENA() {
-        write(ADDR_GPINTENA, GPINTENA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the GPINTENB byte to the GPINTENB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeGPINTENB() {
-        write(ADDR_GPINTENB, GPINTENB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the DEFVALA byte to the DEFVALA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeDEFVALA() {
-        write(ADDR_DEFVALA, DEFVALA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the DEFVALB byte to the DEFVALB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeDEFVALB() {
-        write(ADDR_DEFVALB, DEFVALB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the INTCONA byte to the INTCONA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeINTCONA() {
-        write(ADDR_INTCONA, INTCONA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the INTCONB byte to the INTCONB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeINTCONB() {
-        write(ADDR_INTCONB, INTCONB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the GPPUA byte to the GPPUA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeGPPUA() {
-        write(ADDR_GPPUA, GPPUA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the GPPUB byte to the GPPUB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeGPPUB() {
-        write(ADDR_GPPUB, GPPUB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the OLATA byte to the OLATA register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeOLATA() {
-        write(ADDR_OLATA, OLATA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and write the OLATB byte to the OLATB register.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public void writeOLATB() {
-        write(ADDR_OLATB, OLATB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} object so that two or more reads/writes cannot be
-     * initiated at the same time.
-     *
-     * @param registerAddress the register address.
-     * @return the byte read from the register.
-     * @throws IOException if the SPI read procedure fails.
-     */
-    private byte read(byte registerAddress) throws IOException {
-        byte[] data = new byte[3];
-        // The 0x00 byte is just arbitrary filler.
-        byte[] send = {readOpcode, registerAddress, (byte) 0x00};
-        synchronized (spi) {
-            try {
-                chipSelect.low();
-                int res;
-                res = spi.transfer(send, data);
-                if (res < 0) {
-                    throw new IOException("oh noes! SPI transfer result was negative: " + res);
-                }
-            } finally {
-                // Make sure the chip select line is brought high again
-                // in finally block so that failure may be recoverable.
-                chipSelect.high();
-            }
-        }
-        return data[2];
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read the GPIOA register.
-     *
-     * @return the register's byte
-     * @throws IOException if the SPI write procedure fails.
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public byte readGPIOA() throws IOException {
-        GPIOA = read(ADDR_GPIOA);
-        return GPIOA;
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read the GPIOB register.
-     *
-     * @return the register's byte
-     * @throws IOException if the SPI write procedure fails.
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public byte readGPIOB() throws IOException {
-        GPIOB = read(ADDR_GPIOB);
-        return GPIOB;
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read the GPINTENA register.
-     *
-     * @return the register's byte
-     * @throws IOException if the SPI write procedure fails.
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public byte readGPINTENA() throws IOException {
-        return read(ADDR_GPINTENA);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read the GPINTENB register.
-     *
-     * @return the register's byte
-     * @throws IOException if the SPI write procedure fails.
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public byte readGPINTENB() throws IOException {
-        return read(ADDR_GPINTENB);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read the IOCON register.
-     *
-     * @return the register's byte
-     * @throws IOException if the SPI write procedure fails.
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     */
-    public byte readIOCON() throws IOException {
-        return read(ADDR_IOCON);
-    }
-
-    /**
-     * Initiate SPI communication with the chip and read a byte from the register pointed to by the given address. This
-     * will rethrow any {@link IOException IOException}s that occur as {@link RuntimeException RuntimeException}s.
-     *
-     * @implSpec This is synchronized on the {@link Spi Spi} so that two or more reads/writes cannot be
-     * initiated at the same time.
-     *
-     * @param registerAddress the register address.
-     * @return the byte read from the register.
-     * @throws RuntimeException if the SPI read procedure fails (rethrown from {@code IOException}).
-     */
-    private byte uncheckedRead(byte registerAddress) {
-        try {
-            return read(registerAddress);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /**
-     * This is the callback for when port A interrupts occur. Read the INTFA and INTCAPA or GPIOA registers
-     * depending on {@code readGPIORegisterOnInterrupt} and alert all the
-     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
-     */
-    private void handlePortAInterrupt() {
-        byte interruptMask = uncheckedRead(ADDR_INTFA);
-        byte interruptCapture = uncheckedRead(ADDR_INTCAPA);
-
-        if (readGPIORegisterOnInterrupt) {
-            byte currentCapture = uncheckedRead(ADDR_GPIOA);
-            //if GPIO already differs from INTCAP then ignore. This solves the problem that in practice,
-            //neighbouring pins might get pulled down because of capacitance or something.
-            interruptMask &= ~(interruptCapture ^ currentCapture);
-        }
-        callInterruptListeners(interruptMask, interruptCapture, PORT_A_PINS);
-    }
-
-    /**
-     * This is the callback for when port B interrupts occur. Read the INTFB and INTCAPB or GPIOB registers
-     * depending on {@code readGPIORegisterOnInterrupt} and alert all the
-     * appropriate {@linkplain InterruptListener interrupt listeners} of the interrupt.
-     */
-    private void handlePortBInterrupt() {
-        byte interruptMask = uncheckedRead(ADDR_INTFB);
-        byte interruptCapture = uncheckedRead(ADDR_INTCAPB);
-
-        if (readGPIORegisterOnInterrupt) {
-            byte currentCapture = uncheckedRead(ADDR_GPIOB);
-            //if GPIO already changed from INTCAP then ignore.
-            interruptMask &= ~(interruptCapture ^ currentCapture);
-        }
-        callInterruptListeners(interruptMask, interruptCapture, PORT_B_PINS);
-    }
-
-    /**
-     * Using the given state of the INTFx register, determine which of the given {@linkplain Pin pins} is responsible
-     * for generating an interrupt. Then, call all the global listeners and pin-specific listeners for the pin which
-     * generated the interrupt with the captured value of the pin at the time of the interrupt.
-     *
-     * @param intf   the state of the INTFx register at the time of the interrupt.
-     * @param intcap the state of the INTCAPx register at the time of the interrupt.
-     * @param pins   either {@link MCP23S17#PORT_A_PINS PORT_A_PINS} or {@link MCP23S17#PORT_B_PINS PORT_B_PINS},
-     *               whichever is appropriate.
-     */
-    private void callInterruptListeners(byte intf, byte intcap, Pin[] pins) {
-        for (Pin pin : pins) {
-            if (pin.getCorrespondingBit(intf)) {
-                boolean capturedValue = pin.getCorrespondingBit(intcap);
-                synchronized (globalListeners) {
-                    for (InterruptListener listener : globalListeners) {
-                        listener.onInterrupt(capturedValue, pin);
-                    }
-                }
-                // This can in rare cases where the IO expander is already configured create a PinView object before the
-                // user indirectly creates it lazily...
-                getPinView(pin).relayInterruptToListeners(capturedValue);
-            }
-        }
-    }
-
-    /**
-     * Instantiate a new {@code MCP23S17} object with no interrupts.
-     *
-     * @param bus        the SPI-Channel that the chip is connected to.
-     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param pi4j       the pi4j context
-     * @return a new {@code MCP23S17} object with no interrupts.
-     * @throws NullPointerException if the given chip select output is {@code null}.
-     */
-    public static MCP23S17 newWithoutInterrupts(Context pi4j,
-                                                SpiBus bus,
-                                                DigitalOutput chipSelect) {
-        return new MCP23S17(
-                pi4j,
-                bus,
-                chipSelect,
-                null,
-                null
-        );
-    }
-
-    /**
-     * Instantiate a number of {@code MCP23S17} objects on the same bus with consecutive adresses.
-     *
-     * @param bus    the SPI-Channel that the chip is connected to.
-     * @param pi4j   the {@link Context} object
-     * @param amount the amount of chips on the bus. must be between 1 and 8
-     * @return an {@link ArrayList} of {@code MCP23S17} objects with no interrupts.
-     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
-     * @throws IllegalArgumentException if there are too few/many chips on the bus ({@code amount} not in range 1-8)
-     * @throws NullPointerException     if the given chip select output is {@code null}.
-     */
-    public static ArrayList<MCP23S17> multipleNewOnSameBus(Context pi4j,
-                                                           SpiBus bus,
-                                                           int amount)
-            throws IOException, IllegalArgumentException {
-        if (amount > 8 || amount < 1) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
-        }
-        //todo: this is VERY arbitrary. The chipselect is already handled by the spi config,
-        //      but the code should not just init some random pin.
-        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
-                .id("CS" + 2)
-                .name("dummy chip select")
-                .address(2);
-
-        var chipSelect = pi4j.create(chipSelectConfig);
-        var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(pi4j, bus, chipSelect, null, null);
-        integratedCircuitList.add(firstIC);
-
-        for (int i = 1; i < amount; ++i) {
-            integratedCircuitList.add(new MCP23S17(firstIC, i, null, null, false));
-        }
-
-        //need to enable the hardware adress pins by sending the appropriate address write command.
-        //this enables every chip assuming they are connected to the same SPI bus and Chip select
-        firstIC.write(ADDR_IOCON, (byte) 0b00001000);
-
-        return integratedCircuitList;
-    }
-
-    /**
-     * Instantiate multiple new {@code MCP23S17} objects on the same SPI-bus with their hardware address pins enabled
-     * and with their port A and port B interrupt lines "tied" together.
-     *
-     * @param pi4j       the pi4j {@link  Context} object
-     * @param bus        the {@link  SpiBus} with which to communicatee with the chips
-     * @param interrupts an array of {@link DigitalInput}s to listen for interrupts from the chips
-     * @param amount     the amount of ICs on the bus
-     * @param readGPIO   true if on interrupt the GPIO registers should be read instead of the INTCAP registers
-     * @return all the newly instantiated ICs
-     * @throws IllegalArgumentException if the amount isn't in the range 1-8 or
-     *                                  {@code interrupts.length} is smaller than amount
-     * @throws IOException              if the instantiation of the {@link Spi Spi} object fails.
-     * @throws NullPointerException     if the {@code interrupts} array contains null.
-     */
-    public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Context pi4j,
-                                                                             SpiBus bus,
-                                                                             DigitalInput[] interrupts,
-                                                                             int amount,
-                                                                             boolean readGPIO)
-            throws IllegalArgumentException, IOException {
-
-        if (amount > 8 || amount < 1) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
-        }
-        if (interrupts.length < amount) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be smaller than or equal to the amount of provided interrupts ["
-                            + interrupts.length + "]");
-        }
-        //TODO: this is VERY arbitrary. The chipselect is already handled by the spi config,
-        //      but the code should not just init some random pin.
-        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
-                .id("CS" + 2)
-                .name("dummy chip select")
-                .address(2);
-
-        var chipSelect = pi4j.create(chipSelectConfig);
-
-        var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(pi4j,
-                bus,
-                chipSelect,
-                Objects.requireNonNull(interrupts[0], "interrupts must be non-null"),
-                interrupts[0],
-                readGPIO);
-        integratedCircuitList.add(firstIC);
-        attachInterruptOnLow(interrupts[0], () -> {
-            int i = 0;
-            do {
-                firstIC.handlePortAInterrupt();
-                firstIC.handlePortBInterrupt();
-                delay(10);
-                ++i;
-            } while (interrupts[0].state().isLow() && i < 1);//TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
-
-            if (i > 1) {
-                LOG.warn("read {} times to clear interrupt.", i);
-            }
-        });
-
-        for (int i = 1; i < amount; ++i) {
-            var currentIC = new MCP23S17(firstIC,
-                    i,
-                    Objects.requireNonNull(interrupts[i], "interrupts must be non-null"),
-                    interrupts[i],
-                    readGPIO);
-            integratedCircuitList.add(currentIC);
-
-            DigitalInput interrupt = interrupts[i];
-            attachInterruptOnLow(interrupt, () -> {
-                int j = 0;
-                do {
-                    currentIC.handlePortAInterrupt();
-                    currentIC.handlePortBInterrupt();
-                    delay(10);
-                    ++j;
-                } while (interrupt.state().isLow() && j < 1); //TODO: this is was failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
-                if (j > 1) {
-                    LOG.warn("read {} times to clear interrupt.", j);
-                }
-            });
-        }
-
-
-        // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
-        // should address ALL chips as the address pins aren't enabled yet
-        byte mirrorAndHAEN = 0x40;
-        //need to enable the hardware address pins by sending the appropriate address write command.
-        //this enables every chip assuming they are connected to the same SPI bus and Chip select
-        mirrorAndHAEN |= 0b00001000;
-        firstIC.write(ADDR_IOCON, mirrorAndHAEN);
-        //last chip somehow doesn't tie its interrupt together. Maybe capacitance because it is
-        //the last one on the bus? makes little sense.
-        //anyway, writing to the last one specifically and telling it to tie its interrupts
-        //together works
-        integratedCircuitList.get(integratedCircuitList.size() - 1).write(ADDR_IOCON, mirrorAndHAEN);
-
-        return integratedCircuitList;
-    }
-
-    /**
-     * Instantiate a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
-     *
-     * @param bus        the SPI-Bus that the chip is connected to.
-     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param interrupt  the interrupt {@linkplain DigitalInput input pin}.
-     * @param pi4j the pi4j context
-     * @return a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
-     * @throws NullPointerException if the given chip select output or tied interrupt input is {@code null}.
-     */
-    public static MCP23S17 newWithTiedInterrupts(Context pi4j,
-                                                 SpiBus bus,
-                                                 DigitalOutput chipSelect,
-                                                 DigitalInput interrupt) {
-        MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
-                bus,
-                chipSelect,
-                Objects.requireNonNull(interrupt, "interrupt must be non-null"),
-                interrupt
-        );
-        // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
-        ioExpander.write(ADDR_IOCON, (byte) 0x40);
-        attachInterruptOnLow(interrupt, () -> {
-            ioExpander.handlePortAInterrupt();
-            ioExpander.handlePortBInterrupt();
-        });
-        return ioExpander;
-    }
-
-    /**
-     * Instantiate a new {@code MCP23S17} object with individual port A and port B interrupt lines.
-     *
-     * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
-     * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
-     * @param pi4j the pi4j context
-     * @return a new {@code MCP23S17} object with individual port A and port B interrupt lines.
-     * @throws NullPointerException if the given chip select output or either of the interrupt inputs is {@code null}.
-     */
-    public static MCP23S17 newWithInterrupts(Context pi4j,
-                                             SpiBus bus,
-                                             DigitalOutput chipSelect,
-                                             DigitalInput portAInterrupt,
-                                             DigitalInput portBInterrupt) {
-        MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
-                bus,
-                chipSelect,
-                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
-        );
-        attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
-        attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
-        return ioExpander;
-    }
-
-    /**
-     * Instantiate a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
-     *
-     * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
-     * @param pi4j the pi4j context
-     * @return a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
-     * @throws NullPointerException if the given chip select output or the port A interrupt inputs is {@code null}.
-     */
-    public static MCP23S17 newWithPortAInterrupts(Context pi4j,
-                                                  SpiBus bus,
-                                                  DigitalOutput chipSelect,
-                                                  DigitalInput portAInterrupt) {
-        MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
-                bus,
-                chipSelect,
-                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
-                null
-        );
-        attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
-        return ioExpander;
-    }
-
-    /**
-     * Instantiate a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
-     *
-     * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
-     * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
-     * @param pi4j the pi4j context
-     * @return a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
-     * @throws NullPointerException if the given chip select output or the port B interrupt inputs is {@code null}.
-     */
-    public static MCP23S17 newWithPortBInterrupts(Context pi4j,
-                                                  SpiBus bus,
-                                                  DigitalOutput chipSelect,
-                                                  DigitalInput portBInterrupt) {
-        MCP23S17 ioExpander = new MCP23S17(
-                pi4j,
-                bus,
-                chipSelect,
-                null,
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
-        );
-        attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
-        return ioExpander;
-    }
-
-    /**
-     * Attach a {@link Runnable Runnable} callback to the given {@linkplain DigitalInput input pin} to be invoked
-     * whenever the pin goes low.
-     *
-     * @param interrupt the input pin to attach the interrupt to.
-     * @param callback  the {@code Runnable} callback.
-     */
-    private static void attachInterruptOnLow(DigitalInput interrupt, Runnable callback) {
-        interrupt.addListener(event -> {
-            if (event.state().isLow()) {
-                callback.run();
-            }
-        });
-    }
-
-    /**
-     * get the pi4j {@link Spi} object.
-     *
-     * Useful when mocking SPI in tests
-     *
-     * @return the pi4j {@link Spi} object
-     */
-    public Spi getSpi() {
-        return spi;
-    }
-
-    /**
-     * Utility function to sleep for the specified amount of milliseconds.
-     * An {@link InterruptedException} will be caught and ignored while setting the interrupt flag again.
-     *
-     * @param milliseconds Time in milliseconds to sleep
-     */
-    private static void delay(long milliseconds) {
-        try {
-            Thread.sleep(milliseconds);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
     }
 

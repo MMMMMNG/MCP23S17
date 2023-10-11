@@ -22,6 +22,7 @@ public class Pi4jSetupBase {
     protected DigitalOutput chipSelect;
     protected MockDigitalInput interruptA;
     protected MockDigitalInput interruptB;
+
     @BeforeEach
     void createMockContext() {
         pi4j = Pi4J.newContextBuilder()
