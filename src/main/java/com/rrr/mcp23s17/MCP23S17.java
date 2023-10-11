@@ -4,6 +4,7 @@ import com.pi4j.io.gpio.digital.DigitalInput;
 import com.pi4j.io.spi.Spi;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.helpers.MessageFormatter;
 
 import java.io.IOException;
 import java.util.*;
@@ -46,6 +47,9 @@ import java.util.*;
 //       out-of-sync with the actual values in the registers on the chip. Maybe this is over-engineering it though...
 public final class MCP23S17 {
     public static final int SPI_SPEED_HZ = 1000000;  // 1 MHz; Max 10 MHz
+    public static final String EXC_AMOUNT_OUTSIDE_1_TO_8 = "amount [{}] must be between 1 and 8 as there can only be 8 addresses per Bus";
+    public static final String EXC_HW_ADDR_OUTSIDE_0_TO_7 = "hardWareAddress [{}] must be between 0 and 7, as there are only 3 physical address pins on the MCP23S12 IC";
+    public static final String EXC_AMOUNT_BIGGER_THAN_INTERRUPT_ARRAY = "amount [{}] must be smaller than or equal to the amount of provided interrupts [{}]";
     private static final Logger LOG = LoggerFactory.getLogger(MCP23S17.class);
     // Register addresses for IOCON.BANK = 0
     private static final byte ADDR_IODIRA = 0x00;
@@ -75,10 +79,7 @@ public final class MCP23S17 {
             {Pin.PIN0, Pin.PIN1, Pin.PIN2, Pin.PIN3, Pin.PIN4, Pin.PIN5, Pin.PIN6, Pin.PIN7};
     private static final Pin[] PORT_B_PINS =
             {Pin.PIN8, Pin.PIN9, Pin.PIN10, Pin.PIN11, Pin.PIN12, Pin.PIN13, Pin.PIN14, Pin.PIN15};
-
     // OPCODES--these are written before a register address in the read and write processes.
-    //NOTE: If ICs with different Hardware addresses get added, those addresses are stored in those opcodes.
-    //that's why they're not static.
     private static final byte WRITE_OPCODE = 0x40;
     private static final byte READ_OPCODE = 0x41;
     /**
@@ -158,19 +159,26 @@ public final class MCP23S17 {
                      DigitalInput portBInterrupt,
                      boolean readGPIO) {
         this.readGPIORegisterOnInterrupt = readGPIO;
-        this.spi = Objects.requireNonNull(spi, "Provided SPI is null. Can't have that.");
+        this.spi = nonNull(spi, "SPI");
         this.portAInterrupt = portAInterrupt;
         this.portBInterrupt = portBInterrupt;
         //check whether the Address is in the correct range
         if (hardWareAddress > 7 || hardWareAddress < 0) {
-            throw new IllegalArgumentException("hardWareAddress [" + hardWareAddress + "] must be between 0 and 7,"
-                    + " as there are only 3 physical address pins on the MCP23S12 IC.");
+            throw new IllegalArgumentException(strFormat(EXC_HW_ADDR_OUTSIDE_0_TO_7, hardWareAddress));
         }
         //the hardWareAddress is the three bits before the Read/Write bit:
         //0b0100xxx0 to write to address xxx
         //0b0100xxx1 to read from address xxx
         this.readByte = (byte) (READ_OPCODE | (hardWareAddress << 1));
         this.writeByte = (byte) (WRITE_OPCODE | (hardWareAddress << 1));
+    }
+
+    private static String strFormat(String fstr, Object... objs) {
+        return MessageFormatter.basicArrayFormat(fstr, objs);
+    }
+
+    private static <T> T nonNull(T obj, String name) {
+        return Objects.requireNonNull(obj, name + " must be non-null");
     }
 
     /**
@@ -193,10 +201,9 @@ public final class MCP23S17 {
      * @throws IllegalArgumentException if there are too few/many chips on the bus ({@code amount} not in range 1-8)
      * @throws NullPointerException     if the given chip select output is {@code null}.
      */
-    public static ArrayList<MCP23S17> multipleNewOnSameBus(Spi bus, int amount) {
+    public static List<MCP23S17> multipleNewOnSameBus(Spi bus, int amount) {
         if (amount > 8 || amount < 1) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
+            throw new IllegalArgumentException(strFormat(EXC_AMOUNT_OUTSIDE_1_TO_8, amount));
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
@@ -224,19 +231,16 @@ public final class MCP23S17 {
      *                                  {@code interrupts.length} is smaller than amount
      * @throws NullPointerException     if the {@code interrupts} array contains null.
      */
-    public static ArrayList<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Spi bus,
-                                                                             DigitalInput[] interrupts,
-                                                                             int amount,
-                                                                             boolean readGPIO) {
+    public static List<MCP23S17> multipleNewOnSameBusWithTiedInterrupts(Spi bus,
+                                                                        DigitalInput[] interrupts,
+                                                                        int amount,
+                                                                        boolean readGPIO) {
 
         if (amount > 8 || amount < 1) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
+            throw new IllegalArgumentException(strFormat(EXC_AMOUNT_OUTSIDE_1_TO_8, amount));
         }
         if (interrupts.length < amount) {
-            throw new IllegalArgumentException(
-                    "amount [" + amount + "] must be smaller than or equal to the amount of provided interrupts ["
-                            + interrupts.length + "]");
+            throw new IllegalArgumentException(strFormat(EXC_AMOUNT_BIGGER_THAN_INTERRUPT_ARRAY, amount, interrupts.length));
         }
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
@@ -245,7 +249,7 @@ public final class MCP23S17 {
             var currentIC = new MCP23S17(
                     bus,
                     i,
-                    Objects.requireNonNull(interrupts[i], "interrupts must be non-null"),
+                    nonNull(interrupts[i], "interrupts"),
                     interrupts[i],
                     readGPIO);
             integratedCircuitList.add(currentIC);
@@ -295,7 +299,7 @@ public final class MCP23S17 {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
                 0,
-                Objects.requireNonNull(interrupt, "interrupt must be non-null"),
+                nonNull(interrupt, "interrupt"),
                 interrupt,
                 false);
         // Set the IOCON.MIRROR bit to OR the INTA and INTB lines together.
@@ -322,8 +326,8 @@ public final class MCP23S17 {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
                 0,
-                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null"),
+                nonNull(portAInterrupt, "portAInterrupt"),
+                nonNull(portBInterrupt, "portBInterrupt"),
                 false);
         attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
         attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
@@ -343,7 +347,7 @@ public final class MCP23S17 {
         MCP23S17 ioExpander = new MCP23S17(
                 bus,
                 0,
-                Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
+                nonNull(portAInterrupt, "portAInterrupt"),
                 null,
                 false);
         attachInterruptOnLow(portAInterrupt, ioExpander::handlePortAInterrupt);
@@ -364,7 +368,7 @@ public final class MCP23S17 {
                 bus,
                 0,
                 null,
-                Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null"),
+                nonNull(portBInterrupt, "portBInterrupt"),
                 false);
         attachInterruptOnLow(portBInterrupt, ioExpander::handlePortBInterrupt);
         return ioExpander;
@@ -406,16 +410,10 @@ public final class MCP23S17 {
      * @return the corresponding {@code PinView}.
      */
     public PinView getPinView(Pin pin) {
-        PinView pinView;
         // This is called from callInterruptListeners when an interrupt occurs, hence the need for sync.
         synchronized (pinViews) {
-            pinView = pinViews.get(Objects.requireNonNull(pin, "pin must be non-null"));
-            if (pinView == null) {
-                pinView = new PinView(pin);
-                pinViews.put(pin, pinView);
-            }
+            return pinViews.computeIfAbsent(nonNull(pin, "pin"), PinView::new);
         }
-        return pinView;
     }
 
     /**
@@ -501,7 +499,7 @@ public final class MCP23S17 {
     public void addGlobalListener(InterruptListener listener) {
         synchronized (globalListeners) {
             if (globalListeners.contains(
-                    Objects.requireNonNull(listener, "cannot add null global listener")
+                    nonNull(listener, "listener")
             )) {
                 throw new IllegalArgumentException("global listener already registered");
             }
@@ -520,7 +518,7 @@ public final class MCP23S17 {
     public void removeGlobalListener(InterruptListener listener) {
         synchronized (globalListeners) {
             if (!globalListeners.contains(
-                    Objects.requireNonNull(listener, "cannot remove null global listener")
+                    nonNull(listener, "listener")
             )) {
                 throw new IllegalArgumentException("cannot remove unregistered global listener");
             }
@@ -1103,10 +1101,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     OLATA = pin.setCorrespondingBit(OLATA, value);
-                    // write(ADDR_OLATA, OLATA);
                 } else {  // portB
                     OLATB = pin.setCorrespondingBit(OLATB, value);
-                    // write(ADDR_OLATB, OLATB);
                 }
             }
         }
@@ -1158,10 +1154,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     IODIRA = pin.setCorrespondingBit(IODIRA, input);
-                    // write(ADDR_IODIRA, IODIRA);
                 } else {  // portB
                     IODIRB = pin.setCorrespondingBit(IODIRB, input);
-                    // write(ADDR_IODIRB, IODIRB);
                 }
             }
         }
@@ -1193,21 +1187,19 @@ public final class MCP23S17 {
         }
 
         /**
-         * Set whether or not the pin's input is inverted. More specifically, this sets the corresponding bit in the
+         * Set whether the pin's input is inverted. More specifically, this sets the corresponding bit in the
          * corresponding IPOLx byte (note: not the actual value in the MCP23S17's IPOLx register) if the pin's input is
          * to be inverted, and clears it if the pin's input is to not be inverted.
          *
-         * @param inverted whether or not the pin's input is to be inverted.
+         * @param inverted whether the pin's input is to be inverted.
          */
-        // todo: this name is misleading and inconsistent; should be "isInputInverted"
+        // TODO: this name is misleading and inconsistent; should be "isInputInverted"
         public void setInverted(boolean inverted) {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     IPOLA = pin.setCorrespondingBit(IPOLA, inverted);
-                    // write(ADDR_IPOLA, IPOLA);
                 } else {  // portB
                     IPOLB = pin.setCorrespondingBit(IPOLB, inverted);
-                    // write(ADDR_IPOLB, IPOLB);
                 }
             }
         }
@@ -1249,10 +1241,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     GPINTENA = pin.setCorrespondingBit(GPINTENA, interruptEnabled);
-                    // write(ADDR_GPINTENA, GPINTENA);
                 } else {  // portB
                     GPINTENB = pin.setCorrespondingBit(GPINTENB, interruptEnabled);
-                    // write(ADDR_GPINTENB, GPINTENB);
                 }
             }
         }
@@ -1295,10 +1285,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     DEFVALA = pin.setCorrespondingBit(DEFVALA, value);
-                    // write(ADDR_DEFVALA, DEFVALA);
                 } else {  // portB
                     DEFVALB = pin.setCorrespondingBit(DEFVALB, value);
-                    // write(ADDR_DEFVALB, DEFVALB);
                 }
             }
         }
@@ -1336,10 +1324,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     INTCONA = pin.setCorrespondingBit(INTCONA, comparison);
-                    // write(ADDR_INTCONA, INTCONA);
                 } else {  // portB
                     INTCONB = pin.setCorrespondingBit(INTCONB, comparison);
-                    // write(ADDR_INTCONB, INTCONB);
                 }
             }
         }
@@ -1381,10 +1367,8 @@ public final class MCP23S17 {
             synchronized (byteWriteLock) {
                 if (pin.isPortA()) {
                     GPPUA = pin.setCorrespondingBit(GPPUA, pulledUp);
-                    // write(ADDR_GPPUA, GPPUA);
                 } else {  // portB
                     GPPUB = pin.setCorrespondingBit(GPPUB, pulledUp);
-                    // write(ADDR_GPPUB, GPPUB);
                 }
             }
         }
@@ -1421,7 +1405,7 @@ public final class MCP23S17 {
          */
         public void addListener(InterruptListener listener) {
             synchronized (listeners) {
-                if (listeners.contains(Objects.requireNonNull(listener, "cannot add null listener"))) {
+                if (listeners.contains(nonNull(listener, "listener"))) {
                     throw new IllegalArgumentException("listener already registered");
                 }
                 listeners.add(listener);
@@ -1438,7 +1422,7 @@ public final class MCP23S17 {
          */
         public void removeListener(InterruptListener listener) {
             synchronized (listeners) {
-                if (!listeners.contains(Objects.requireNonNull(listener, "cannot remove null listener"))) {
+                if (!listeners.contains(nonNull(listener, "listener"))) {
                     throw new IllegalArgumentException("cannot remove unregistered listener");
                 }
                 listeners.remove(listener);
