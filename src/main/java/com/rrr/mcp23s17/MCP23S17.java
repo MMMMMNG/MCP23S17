@@ -79,10 +79,6 @@ public final class MCP23S17 {
             {Pin.PIN0, Pin.PIN1, Pin.PIN2, Pin.PIN3, Pin.PIN4, Pin.PIN5, Pin.PIN6, Pin.PIN7};
     private static final Pin[] PORT_B_PINS =
             {Pin.PIN8, Pin.PIN9, Pin.PIN10, Pin.PIN11, Pin.PIN12, Pin.PIN13, Pin.PIN14, Pin.PIN15};
-    /**
-     * The output pin for the chip select line on the MCP23S17 chip.
-     */
-    private final DigitalOutput chipSelect;
 
     // OPCODES--these are written before a register address in the read and write processes.
     //NOTE: If ICs with different Hardware addresses get added, those addresses are stored in those opcodes.
@@ -148,7 +144,6 @@ public final class MCP23S17 {
      * This is the first out of two private constructors.--the static factory methods must be used for object creation.
      *
      * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
      *                       or {@code null}.
      * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
@@ -158,18 +153,13 @@ public final class MCP23S17 {
      */
     private MCP23S17(Context pi4j,
                      SpiBus bus,
-                     DigitalOutput chipSelect,
                      DigitalInput portAInterrupt,
                      DigitalInput portBInterrupt,
                      boolean readGPIO) {
-        this.chipSelect = Objects.requireNonNull(chipSelect, "chipSelect must be non-null");
         this.readGPIORegisterOnInterrupt = readGPIO;
         this.spi = pi4j.create(buildSpiConfig(pi4j, bus, SPI_SPEED_HZ));
         this.portAInterrupt = portAInterrupt;
         this.portBInterrupt = portBInterrupt;
-
-        // Take the CS pin high if it is not already since the CS is active low.
-        chipSelect.high();
     }
 
     /**
@@ -177,7 +167,6 @@ public final class MCP23S17 {
      * constructors, it is just a helper to emulate default parameters via overloading.
      *
      * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param portAInterrupt the {@linkplain DigitalInput input pin} for the port A interrupt line on the chip,
      *                       or {@code null}.
      * @param portBInterrupt the {@linkplain DigitalInput input pin} for the port B interrupt line on the chip,
@@ -186,12 +175,10 @@ public final class MCP23S17 {
      */
     private MCP23S17(Context pi4j,
                      SpiBus bus,
-                     DigitalOutput chipSelect,
                      DigitalInput portAInterrupt,
                      DigitalInput portBInterrupt) {
         this(pi4j,
                 bus,
-                chipSelect,
                 portAInterrupt,
                 portBInterrupt,
                 false);
@@ -217,7 +204,6 @@ public final class MCP23S17 {
                      DigitalInput portBInterrupt,
                      boolean readGPIO)
             throws IOException {
-        this.chipSelect = other.chipSelect;
         this.readGPIORegisterOnInterrupt = readGPIO;
         this.spi = other.spi;
         this.portAInterrupt = portAInterrupt;
@@ -238,18 +224,15 @@ public final class MCP23S17 {
      * Instantiate a new {@code MCP23S17} object with no interrupts.
      *
      * @param bus        the SPI-Channel that the chip is connected to.
-     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param pi4j       the pi4j context
      * @return a new {@code MCP23S17} object with no interrupts.
      * @throws NullPointerException if the given chip select output is {@code null}.
      */
     public static MCP23S17 newWithoutInterrupts(Context pi4j,
-                                                SpiBus bus,
-                                                DigitalOutput chipSelect) {
+                                                SpiBus bus) {
         return new MCP23S17(
                 pi4j,
                 bus,
-                chipSelect,
                 null,
                 null
         );
@@ -274,16 +257,9 @@ public final class MCP23S17 {
             throw new IllegalArgumentException(
                     "amount [" + amount + "] must be between 1 and 8 as there can only be 8 addresses per Bus");
         }
-        //todo: this is VERY arbitrary. The chipselect is already handled by the spi config,
-        //      but the code should not just init some random pin.
-        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
-                .id("CS" + 2)
-                .name("dummy chip select")
-                .address(2);
 
-        var chipSelect = pi4j.create(chipSelectConfig);
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
-        var firstIC = new MCP23S17(pi4j, bus, chipSelect, null, null);
+        var firstIC = new MCP23S17(pi4j, bus, null, null);
         integratedCircuitList.add(firstIC);
 
         for (int i = 1; i < amount; ++i) {
@@ -328,19 +304,10 @@ public final class MCP23S17 {
                     "amount [" + amount + "] must be smaller than or equal to the amount of provided interrupts ["
                             + interrupts.length + "]");
         }
-        //TODO: this is VERY arbitrary. The chipselect is already handled by the spi config,
-        //      but the code should not just init some random pin.
-        var chipSelectConfig = DigitalOutput.newConfigBuilder(pi4j)
-                .id("CS" + 2)
-                .name("dummy chip select")
-                .address(2);
-
-        var chipSelect = pi4j.create(chipSelectConfig);
 
         var integratedCircuitList = new ArrayList<MCP23S17>(amount);
         var firstIC = new MCP23S17(pi4j,
                 bus,
-                chipSelect,
                 Objects.requireNonNull(interrupts[0], "interrupts must be non-null"),
                 interrupts[0],
                 readGPIO);
@@ -403,7 +370,6 @@ public final class MCP23S17 {
      * Instantiate a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
      *
      * @param bus        the SPI-Bus that the chip is connected to.
-     * @param chipSelect the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param interrupt  the interrupt {@linkplain DigitalInput input pin}.
      * @param pi4j       the pi4j context
      * @return a new {@code MCP23S17} object with the port A and port B interrupt lines "tied" together.
@@ -411,12 +377,10 @@ public final class MCP23S17 {
      */
     public static MCP23S17 newWithTiedInterrupts(Context pi4j,
                                                  SpiBus bus,
-                                                 DigitalOutput chipSelect,
                                                  DigitalInput interrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 pi4j,
                 bus,
-                chipSelect,
                 Objects.requireNonNull(interrupt, "interrupt must be non-null"),
                 interrupt
         );
@@ -433,7 +397,6 @@ public final class MCP23S17 {
      * Instantiate a new {@code MCP23S17} object with individual port A and port B interrupt lines.
      *
      * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
      * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
      * @param pi4j           the pi4j context
@@ -442,13 +405,11 @@ public final class MCP23S17 {
      */
     public static MCP23S17 newWithInterrupts(Context pi4j,
                                              SpiBus bus,
-                                             DigitalOutput chipSelect,
                                              DigitalInput portAInterrupt,
                                              DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 pi4j,
                 bus,
-                chipSelect,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
                 Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
         );
@@ -461,7 +422,6 @@ public final class MCP23S17 {
      * Instantiate a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
      *
      * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param portAInterrupt the interrupt {@linkplain DigitalInput input pin} for port A.
      * @param pi4j           the pi4j context
      * @return a new {@code MCP23S17} object with an individual port A interrupt line, but no port B interrupt line.
@@ -469,12 +429,10 @@ public final class MCP23S17 {
      */
     public static MCP23S17 newWithPortAInterrupts(Context pi4j,
                                                   SpiBus bus,
-                                                  DigitalOutput chipSelect,
                                                   DigitalInput portAInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 pi4j,
                 bus,
-                chipSelect,
                 Objects.requireNonNull(portAInterrupt, "portAInterrupt must be non-null"),
                 null
         );
@@ -486,7 +444,6 @@ public final class MCP23S17 {
      * Instantiate a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
      *
      * @param bus            the SPI-Bus that the chip is connected to.
-     * @param chipSelect     the {@linkplain DigitalOutput output pin} controlling the chip select line on the chip.
      * @param portBInterrupt the interrupt {@linkplain DigitalInput input pin} for port B.
      * @param pi4j           the pi4j context
      * @return a new {@code MCP23S17} object with an individual port B interrupt line, but no port A interrupt line.
@@ -494,12 +451,10 @@ public final class MCP23S17 {
      */
     public static MCP23S17 newWithPortBInterrupts(Context pi4j,
                                                   SpiBus bus,
-                                                  DigitalOutput chipSelect,
                                                   DigitalInput portBInterrupt) {
         MCP23S17 ioExpander = new MCP23S17(
                 pi4j,
                 bus,
-                chipSelect,
                 null,
                 Objects.requireNonNull(portBInterrupt, "portBInterrupt must be non-null")
         );
@@ -692,17 +647,10 @@ public final class MCP23S17 {
      * initiated at the same time.
      */
     private void write(byte registerAddress, byte value) {
-        // Without testing it is unclear whether the synchronization here is necessary--the documentation on read
+        // Without testing it is unclear whether the synchronization here is necessary--the documentation on write
         // is poor.
         synchronized (spi) {
-            try {
-                chipSelect.low();
-                spi.write(writeOpcode, registerAddress, value);
-            } finally {
-                // Make sure the chip select line is brought high again in finally
-                // block so that failure may be recoverable.
-                chipSelect.high();
-            }
+            spi.write(writeOpcode, registerAddress, value);
         }
     }
 
@@ -860,17 +808,10 @@ public final class MCP23S17 {
         // The 0x00 byte is just arbitrary filler.
         byte[] send = {readOpcode, registerAddress, (byte) 0x00};
         synchronized (spi) {
-            try {
-                chipSelect.low();
-                int res;
-                res = spi.transfer(send, data);
-                if (res < 0) {
-                    throw new IOException("oh noes! SPI transfer result was negative: " + res);
-                }
-            } finally {
-                // Make sure the chip select line is brought high again
-                // in finally block so that failure may be recoverable.
-                chipSelect.high();
+            int res;
+            res = spi.transfer(send, data);
+            if (res < 0) {
+                throw new IOException("oh noes! SPI transfer result was negative: " + res);
             }
         }
         return data[2];

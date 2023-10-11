@@ -19,7 +19,6 @@ public class Pi4jSetupBase {
     protected static final Logger LOG = LoggerFactory.getLogger(MCP23S17Test.class);
 
     protected Context pi4j;
-    protected DigitalOutput chipSelect;
     protected MockDigitalInput interruptA;
     protected MockDigitalInput interruptB;
 
@@ -30,7 +29,6 @@ public class Pi4jSetupBase {
                         MockDigitalOutputProvider.newInstance(),
                         MockDigitalInputProvider.newInstance())
                 .build();
-        chipSelect = DigitalOutputBuilder.newInstance(pi4j).address(20).build();
         var DIconfig = DigitalInputConfig.newBuilder(pi4j).address(21);
         interruptA = (MockDigitalInput) pi4j.create(DIconfig.build());
         interruptB = (MockDigitalInput) pi4j.create(DIconfig.address(22).build());
