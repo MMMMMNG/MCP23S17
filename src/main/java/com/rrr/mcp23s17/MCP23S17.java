@@ -146,7 +146,7 @@ public final class MCP23S17 {
      * Note that the Address pins are disabled by default. The factory method enables them.
      *
      * @param spi             the chip is wired to this interface (SPI).
-     * @param hardWareAddress The Hardware Adress of this very MCP23S17 IC.
+     * @param hardWareAddress The Hardware address of this very MCP23S17 IC.
      * @param portAInterrupt  the pin where INTA of this chip is connected
      * @param portBInterrupt  the pin where INTB of this chip is connected
      * @param readGPIO        whether to read from GPIO registers in addition to INTCAP registers on interrupt.
@@ -193,7 +193,7 @@ public final class MCP23S17 {
     }
 
     /**
-     * Instantiate a number of {@code MCP23S17} objects on the same bus with consecutive adresses.
+     * Instantiate a number of {@code MCP23S17} objects on the same bus with consecutive addresses.
      *
      * @param bus    the chip is wired to this interface (SPI).
      * @param amount the amount of chips on the bus. must be between 1 and 8
@@ -211,7 +211,7 @@ public final class MCP23S17 {
             integratedCircuitList.add(new MCP23S17(bus, i, null, null, false));
         }
 
-        //need to enable the hardware adress pins by sending the appropriate address write command.
+        //need to enable the hardware address pins by sending the appropriate address write command.
         //this enables every chip assuming they are connected to the same SPI bus and Chip select
         integratedCircuitList.get(0).write(ADDR_IOCON, (byte) 0b00001000);
 
@@ -262,7 +262,7 @@ public final class MCP23S17 {
                     currentIC.handlePortBInterrupt();
                     delay(10);
                     ++j;
-                } while (interrupt.state().isLow() && j < 1); //TODO: this is a failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be adressed
+                } while (interrupt.state().isLow() && j < 1); //TODO: this is a failsave for production. sometimes a single read didn't suffice. But it is very hacky and sucks for automated testing. Should definitely be addressed
                 if (j > 1) {
                     LOG.warn("read {} times to clear interrupt.", j);
                 }
