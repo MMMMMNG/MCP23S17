@@ -87,6 +87,8 @@ dependencies {
     implementation 'com.pi4j:pi4j-plugin-pigpio:2.3.0'
 
     examplesImplementation files('./build/libs/MCP23S17-1.3.0-all.jar')
+    examplesCompileOnly 'org.slf4j:slf4j-api:2.0.9'
+    examplesCompileOnly 'com.pi4j:pi4j-core:2.3.0'
 }
 
 test {
