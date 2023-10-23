@@ -46,6 +46,7 @@ remotes {
 
 tasks.register('uberExamplesJar', Jar) {
     archiveClassifier = 'uberExamples'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
         attributes 'Main-Class': 'com.github.mng.mcp23s17.examples.ConsecutiveTurnOnExample'
     }
@@ -62,6 +63,7 @@ tasks.register("runExample") {
     doLast {
         ssh.run {
             session(remotes.rasPi) {
+                execute "mkdir -p $remoteBuildDir"
                 put from: "./build/libs/$jarName", into: remoteBuildDir
                 executeSudo "java -jar $remoteBuildDir/$jarName 1>&2" //re-route stdout to stderr so the user sees all the log output
 
@@ -87,6 +89,7 @@ dependencies {
     implementation 'com.pi4j:pi4j-plugin-pigpio:2.3.0'
 
     examplesImplementation files('./build/libs/MCP23S17-1.3.0-all.jar')
+    examplesImplementation 'org.slf4j:slf4j-simple:2.0.9'
     examplesCompileOnly 'org.slf4j:slf4j-api:2.0.9'
     examplesCompileOnly 'com.pi4j:pi4j-core:2.3.0'
 }

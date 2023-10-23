@@ -18,9 +18,10 @@ public class ConsecutiveTurnOnExample {
     private static final Logger log = LoggerFactory.getLogger(ConsecutiveTurnOnExample.class);
     public static void main(String[] args) throws IOException, InterruptedException {
         log.info("'sup, starting MCP23S17 turn-on example.");
-        log.info("whoohoo 💝🍻🔥");
+        log.info("whoohoo 🔥");
 
         var context = Pi4J.newAutoContext();
+
         var spi = context.create(SpiConfigBuilder.newInstance(context)
                 .id("MCP23S17 example")
                 .bus(SpiBus.BUS_0)
@@ -54,6 +55,7 @@ public class ConsecutiveTurnOnExample {
         }
 
         var cons = new Console();
+        cons.box("wait for exit");
         cons.waitForExit();
     }
 }
