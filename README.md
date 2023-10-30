@@ -13,7 +13,8 @@ or<br/>
 ### Wiring
 For the ConsecutiveTurnOnExample, the following wiring was used:
 ![wiring.svg](assets/wiring.svg)
-*Simple wiring diagram for two chips on the same bus (made with [Figma](https://www.figma.com) and assets from [Fritzing parts](https://github.com/fritzing/fritzing-parts/tree/develop/svg/core/breadboard)). To check RaspberryPi pin designations, use [pinout.xyz](https://pinout.xyz/).*
+*Simple wiring diagram for two chips on the same bus (made with [Figma](https://www.figma.com) and assets from [Fritzing parts](https://github.com/fritzing/fritzing-parts/tree/develop/svg/core/breadboard)).*
+*To check RaspberryPi pin designations, use [pinout.xyz](https://pinout.xyz/) and the [MCP23S17 Datasheet](assets/datasheet-mcp23s17.pdf).*
 <br/>***NOTE:** For the InputInterruptExample, one of the Interrupt ports of each chip has to be connected to BCM 22 (Chip 0) and BCM 23 (Chip 1). Not documented on the wiring diagram.*
 ## Building
 Clone this repository and run
