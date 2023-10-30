@@ -47,8 +47,9 @@ remotes {
 tasks.register('uberExamplesJar', Jar) {
     archiveClassifier = 'uberExamples'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    def exeClass = project.findProperty("example")
     manifest {
-        attributes 'Main-Class': 'com.github.mng.mcp23s17.examples.ConsecutiveTurnOnExample'
+        attributes 'Main-Class': "com.github.mng.mcp23s17.examples.$exeClass"
     }
     from sourceSets.examples.output
     dependsOn configurations.examplesRuntimeClasspath
@@ -71,6 +72,14 @@ tasks.register("runExample") {
         }
     }
 }
+
+shadowJar {
+    // Merge the services files from the dependencies
+    // That is necessary for Pi4j.newAutoContext() to work
+    // see https://pi4j.com/documentation/building/fat-jar/#loading-of-the-pi4j-modules
+    mergeServiceFiles()
+}
+
 compileExamplesJava.dependsOn shadowJar
 runExample.dependsOn uberExamplesJar
 
