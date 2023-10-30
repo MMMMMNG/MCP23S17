@@ -1,6 +1,20 @@
 # MCP23S17
 Java class for interfacing with the MCP23S17 IO expander with a Raspberry Pi.
 
+## Examples
+To run examples simply choose a class from `src/examples/java` and run it like so:<br/>
+`./gradlew runExample -Pexample=InputInterruptExample`<br/>
+or<br/>
+`./gradlew runExample -Pexample=ConsecutiveTurnOnExample`
+
+![turnOnExample.gif](assets/turnOnExample.gif)
+*The ConsecutiveTurnOnExample class running on a RaspberryPi 3B*
+
+### Wiring
+For the ConsecutiveTurnOnExample, the following wiring was used:
+![wiring.svg](assets/wiring.svg)
+*Simple wiring diagram for two chips on the same bus (made with [Figma](https://www.figma.com) and assets from [Fritzing parts](https://github.com/fritzing/fritzing-parts/tree/develop/svg/core/breadboard)). To check RaspberryPi pin designations, use [pinout.xyz](https://pinout.xyz/).*
+<br/>***NOTE:** For the InputInterruptExample, one of the Interrupt ports of each chip has to be connected to BCM 22 (Chip 0) and BCM 23 (Chip 1). Not documented on the wiring diagram.*
 ## Building
 Clone this repository and run
 
