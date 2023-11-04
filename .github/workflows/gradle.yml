@@ -28,12 +28,6 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-    - name: Set up dependency
-      uses: dawidd6/action-download-artifact@v2
-      with:
-        workflow: upload.yml
-        name: pi4j-mock-plugin
-        path: /home/runner/.m2/repository/com
     - name: Build with Gradle
       uses: gradle/gradle-build-action@v2.9.0
       with:
